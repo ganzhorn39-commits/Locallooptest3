@@ -57,6 +57,68 @@ export type EventItem = {
   cancelled_at?: string | null;
 };
 
+// Host dashboard (GET /my/dashboard) — real numbers only, no simulated live counts.
+export type DashboardEvent = {
+  id: string;
+  title: string;
+  category: string;
+  emoji?: string;
+  image_url?: string;
+  start_time: string;
+  next_occurrence: string;
+  is_recurring: boolean;
+  recurrence_label?: string;
+  status: "active" | "cancelled";
+  phase: "upcoming" | "past" | "cancelled";
+  capacity: number;
+  join_approval: "auto" | "manual";
+  rating: number;
+  rating_count: number;
+  checkins: number;
+  saves: number;
+  reviews: number;
+  pending_requests: number;
+};
+
+export type DashboardRequest = {
+  user_id: string;
+  name?: string;
+  picture?: string;
+  birthdate?: string;
+  identity_verified?: boolean;
+  event_id: string;
+  event_title: string;
+  requested_at?: string;
+};
+
+export type DashboardReview = {
+  id: string;
+  event_id: string;
+  event_title: string;
+  user_name: string;
+  rating: number;
+  comment: string;
+  created_at: string;
+};
+
+export type Dashboard = {
+  totals: {
+    events: number;
+    active_events: number;
+    checkins: number;
+    checkins_7d: number;
+    saves: number;
+    reviews: number;
+    pending_requests: number;
+    rating: number;
+    rating_count: number;
+  };
+  checkins_by_day: { date: string; count: number }[];
+  events: DashboardEvent[];
+  requests: DashboardRequest[];
+  recent_reviews: DashboardReview[];
+};
+
 export const api = {
   listEvents: (category?: string): Promise<EventItem[]> =>
     req(`/events${category && category !== "all" ? `?category=${category}` : ""}`),
@@ -81,6 +143,7 @@ export const api = {
   saveStatus: (id: string): Promise<{ saved: boolean }> => req(`/events/${id}/save-status`),
   mySaved: (): Promise<EventItem[]> => req(`/my/saved`),
   myAttending: (): Promise<EventItem[]> => req(`/my/attending`),
+  myDashboard: (): Promise<Dashboard> => req(`/my/dashboard?tz_offset=${new Date().getTimezoneOffset()}`),
 
   // Push
   registerPush: (payload: { user_id: string; platform: string; device_token: string }) =>

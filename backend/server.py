@@ -5,6 +5,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import random
+import re
 import uuid
 import httpx
 from pathlib import Path
@@ -173,19 +174,26 @@ async def create_session(req: SessionRequest):
     return {"user": user, "session_token": session_token}
 
 
+class DevSessionBody(BaseModel):
+    alias: str = ""  # optional: separate demo users (demo+<alias>@localloop.app), e.g. host + guest in tests
+
+
 @api_router.post("/auth/dev-session")
-async def dev_session():
+async def dev_session(body: Optional[DevSessionBody] = None):
     """Preview-only login for automated testing. Guarded by ALLOW_DEV_LOGIN env."""
     if os.environ.get("ALLOW_DEV_LOGIN", "").lower() != "true":
         raise HTTPException(status_code=404, detail="Not found")
-    email = "demo@localloop.app"
+    alias = (body.alias if body else "").strip().lower()
+    if alias and not re.fullmatch(r"[a-z0-9_-]{1,32}", alias):
+        raise HTTPException(status_code=400, detail="Invalid alias")
+    email = f"demo+{alias}@localloop.app" if alias else "demo@localloop.app"
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
         user_id = existing["user_id"]
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         await db.users.insert_one({
-            "user_id": user_id, "email": email, "name": "Demo Explorer",
+            "user_id": user_id, "email": email, "name": f"Demo {alias}" if alias else "Demo Explorer",
             "picture": "", "created_at": now_utc().isoformat(),
         })
     session_token = f"dev_{uuid.uuid4().hex}"
@@ -238,16 +246,19 @@ def with_live_count(doc: dict) -> dict:
     off_lng = ((((seed // 1000) % 1000) / 1000) - 0.5) * 0.008
     doc["pin_latitude"] = round(doc.get("latitude", 0) + off_lat, 6)
     doc["pin_longitude"] = round(doc.get("longitude", 0) + off_lng, 6)
+    doc["next_occurrence"] = compute_next_occurrence(doc)
+    return doc
+
+
+def compute_next_occurrence(doc: dict) -> str:
     if doc.get("is_recurring") and doc.get("recurrence_days"):
         try:
             st = datetime.fromisoformat(doc["start_time"])
             nxt = next_recurring_occurrence(doc["recurrence_days"], st.hour, st.minute)
-            doc["next_occurrence"] = nxt or doc["start_time"]
+            return nxt or doc["start_time"]
         except Exception:
-            doc["next_occurrence"] = doc["start_time"]
-    else:
-        doc["next_occurrence"] = doc["start_time"]
-    return doc
+            return doc["start_time"]
+    return doc["start_time"]
 
 
 @api_router.get("/events")
@@ -316,7 +327,7 @@ async def checkin(event_id: str, body: CheckinBody = CheckinBody(), user=Depends
             try:
                 await send_push(
                     recipients=[doc.get("created_by")],
-                    data={"title": "New join request 🙋", "message": f"{user.get('name') or 'Someone'} wants to join \"{doc['title']}\"", "action_url": f"/requests/{event_id}"},
+                    data={"title": "New join request 🙋", "message": f"{user.get('name') or 'Someone'} wants to join \"{doc['title']}\"", "action_url": "/dashboard"},
                 )
             except Exception as e:
                 logger.warning(f"request push failed (non-blocking): {e}")
@@ -371,6 +382,8 @@ async def list_requests(event_id: str, user=Depends(get_current_user)):
 @api_router.post("/events/{event_id}/requests/{req_user_id}/approve")
 async def approve_request(event_id: str, req_user_id: str, user=Depends(get_current_user)):
     ev = await require_host(event_id, user)
+    if ev.get("status") == "cancelled":
+        raise HTTPException(status_code=409, detail="Event cancelled")
     reqd = await db.join_requests.find_one({"event_id": event_id, "user_id": req_user_id, "status": "pending"})
     if not reqd:
         raise HTTPException(status_code=404, detail="Request not found")
@@ -460,7 +473,8 @@ async def get_public_user(user_id: str):
     u = await db.users.find_one(
         {"user_id": user_id},
         {"_id": 0, "user_id": 1, "name": 1, "picture": 1, "bio": 1, "instagram": 1,
-         "account_type": 1, "verified": 1, "identity_verified": 1, "birthdate": 1, "business_name": 1},
+         "account_type": 1, "verified": 1, "identity_verified": 1, "birthdate": 1, "business_name": 1,
+         "business_category": 1, "business_address": 1, "business_website": 1, "business_instagram": 1},
     )
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
@@ -483,8 +497,13 @@ async def delete_profile(user=Depends(get_current_user)):
 @api_router.patch("/profile")
 async def update_profile(payload: ProfileUpdate, user=Depends(get_current_user)):
     updates = {k: v for k, v in payload.dict().items() if v is not None}
+    for k in ("business_name", "business_address", "business_website", "business_instagram"):
+        if k in updates:
+            updates[k] = updates[k].strip()
     # Business accounts with a completed business profile are auto-verified (demo).
     merged = {**user, **updates}
+    if merged.get("account_type") == "business" and "business_name" in updates and not updates["business_name"]:
+        raise HTTPException(status_code=400, detail="Business name is required")
     if merged.get("account_type") == "business" and merged.get("business_name"):
         updates["verified"] = True
     if updates:
@@ -779,6 +798,130 @@ async def my_attending(user=Depends(get_current_user)):
     ids = [c["event_id"] for c in checks]
     docs = await db.events.find({"id": {"$in": ids}}, {"_id": 0}).to_list(500)
     return [with_live_count(d) for d in docs]
+
+
+# ----------------------------- Host dashboard -----------------------------
+# Real numbers only: the simulated live_count jitter from the map is deliberately left out.
+PAST_GRACE = timedelta(hours=12)  # a one-off event counts as "past" 12h after its start
+
+
+def parse_iso(value) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def event_phase(doc: dict, now: datetime) -> str:
+    if doc.get("status") == "cancelled":
+        return "cancelled"
+    if doc.get("is_recurring") and doc.get("recurrence_days"):
+        return "upcoming"
+    start = parse_iso(doc.get("start_time"))
+    return "past" if start and start < now - PAST_GRACE else "upcoming"
+
+
+async def counts_by_event(collection, match: dict) -> dict:
+    rows = await collection.aggregate([
+        {"$match": match},
+        {"$group": {"_id": "$event_id", "n": {"$sum": 1}}},
+    ]).to_list(None)
+    return {r["_id"]: r["n"] for r in rows}
+
+
+@api_router.get("/my/dashboard")
+async def my_dashboard(tz_offset: int = 0, user=Depends(get_current_user)):
+    """Host overview for the events this user created.
+    tz_offset = JS Date.getTimezoneOffset() of the viewer (Berlin summer: -120), used for the per-day chart."""
+    uid = user["user_id"]
+    now = now_utc()
+    local = timedelta(minutes=-max(-840, min(840, tz_offset)))
+    events = await db.events.find({"created_by": uid}, {"_id": 0}).to_list(500)
+    by_id = {e["id"]: e for e in events}
+    ids = list(by_id)
+    open_ids = [e["id"] for e in events if e.get("status") != "cancelled"]
+
+    checkins = await counts_by_event(db.checkins, {"event_id": {"$in": ids}})
+    saves = await counts_by_event(db.saves, {"event_id": {"$in": ids}})
+    reviews = await counts_by_event(db.reviews, {"event_id": {"$in": ids}})
+
+    # Open join requests (only for events that are not cancelled, only from users that still exist).
+    req_docs = await db.join_requests.find(
+        {"event_id": {"$in": open_ids}, "status": "pending"}, {"_id": 0}
+    ).sort("at", -1).to_list(1000)
+    requesters = await db.users.find(
+        {"user_id": {"$in": list({r["user_id"] for r in req_docs})}},
+        {"_id": 0, "user_id": 1, "name": 1, "picture": 1, "birthdate": 1, "identity_verified": 1},
+    ).to_list(None)
+    requesters = {u["user_id"]: u for u in requesters}
+    open_requests = [r for r in req_docs if r["user_id"] in requesters]
+    pending: dict = {}
+    for r in open_requests:
+        pending[r["event_id"]] = pending.get(r["event_id"], 0) + 1
+
+    # Check-ins per local day, last 7 days (oldest first, today last).
+    today = (now + local).date()
+    days = [today - timedelta(days=i) for i in range(6, -1, -1)]
+    window_start = datetime.combine(days[0], datetime.min.time(), tzinfo=timezone.utc) - local
+    recent = await db.checkins.find(
+        {"event_id": {"$in": ids}, "at": {"$gte": window_start.isoformat()}}, {"_id": 0, "at": 1}
+    ).to_list(10000)
+    per_day = {d: 0 for d in days}
+    for c in recent:
+        at = parse_iso(c.get("at"))
+        if at and (at + local).date() in per_day:
+            per_day[(at + local).date()] += 1
+
+    rows = []
+    for e in events:
+        eid = e["id"]
+        rows.append({
+            "id": eid, "title": e.get("title", ""), "category": e.get("category", ""),
+            "emoji": e.get("emoji", ""), "image_url": e.get("image_url", ""),
+            "start_time": e.get("start_time"), "next_occurrence": compute_next_occurrence(e),
+            "is_recurring": bool(e.get("is_recurring")), "recurrence_label": e.get("recurrence_label", ""),
+            "status": e.get("status", "active"), "phase": event_phase(e, now),
+            "capacity": int(e.get("capacity", 0) or 0), "join_approval": e.get("join_approval", "auto"),
+            "rating": float(e.get("rating", 0) or 0), "rating_count": int(e.get("rating_count", 0) or 0),
+            "checkins": checkins.get(eid, 0), "saves": saves.get(eid, 0),
+            "reviews": reviews.get(eid, 0), "pending_requests": pending.get(eid, 0),
+        })
+    far = datetime.max.replace(tzinfo=timezone.utc)
+    upcoming = sorted((r for r in rows if r["phase"] == "upcoming"), key=lambda r: parse_iso(r["next_occurrence"]) or far)
+    past = sorted((r for r in rows if r["phase"] == "past"), key=lambda r: parse_iso(r["start_time"]) or far, reverse=True)
+    cancelled = sorted((r for r in rows if r["phase"] == "cancelled"), key=lambda r: by_id[r["id"]].get("cancelled_at") or "", reverse=True)
+
+    requests_out = [
+        {**requesters[r["user_id"]], "event_id": r["event_id"],
+         "event_title": by_id[r["event_id"]].get("title", ""), "requested_at": r.get("at")}
+        for r in open_requests[:50]
+    ]
+
+    latest = await db.reviews.find({"event_id": {"$in": ids}}, {"_id": 0}).sort("created_at", -1).to_list(5)
+    recent_reviews = [{**r, "event_title": by_id[r["event_id"]].get("title", "")} for r in latest]
+
+    rating_count = sum(r["rating_count"] for r in rows)
+    rating = round(sum(r["rating"] * r["rating_count"] for r in rows) / rating_count, 1) if rating_count else 0.0
+    return {
+        "totals": {
+            "events": len(rows),
+            "active_events": len(upcoming),
+            "checkins": sum(checkins.values()),
+            "checkins_7d": sum(per_day.values()),
+            "saves": sum(saves.values()),
+            "reviews": sum(reviews.values()),
+            "pending_requests": len(open_requests),
+            "rating": rating,
+            "rating_count": rating_count,
+        },
+        "checkins_by_day": [{"date": d.isoformat(), "count": per_day[d]} for d in days],
+        "events": upcoming + past + cancelled,
+        "requests": requests_out,
+        "recent_reviews": recent_reviews,
+    }
 
 
 # ----------------------------- Seed -----------------------------
