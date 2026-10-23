@@ -195,6 +195,30 @@ export default function DashboardScreen() {
                   : t("dash_no_rating")} />
             </View>
 
+            {(isBiz || totals.offers > 0) && (
+              <View testID="dashboard-deals" style={[styles.dealsCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+                <View style={styles.inlineRow}>
+                  <View style={[styles.dealsIcon, { backgroundColor: colors.accent }]}>
+                    <Ionicons name="gift" size={18} color={colors.onAccent} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.rowTitle, { color: colors.onSurface }]}>{t("deals")}</Text>
+                    <Text testID="dashboard-deals-sub" style={[styles.rowSub, { color: colors.onSurfaceTertiary }]}>
+                      {totals.offers > 0
+                        ? t("dash_deals_sub").replace("{c}", String(totals.deals_claimed)).replace("{r}", String(totals.deals_redeemed))
+                        : t("dash_deals_hint")}
+                    </Text>
+                  </View>
+                </View>
+                {totals.offers > 0 && (
+                  <Pressable testID="dashboard-scan" onPress={() => router.push("/scan-deal")} style={[styles.primaryBtn, styles.scanBtn, { backgroundColor: colors.accent }]}>
+                    <Ionicons name="scan" size={20} color={colors.onAccent} />
+                    <Text style={[styles.primaryBtnText, { color: colors.onAccent }]}>{t("dash_scan")}</Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
+
             {data.requests.length > 0 && (
               <View style={styles.section} testID="dashboard-requests">
                 <Text style={[styles.sectionTitle, { color: colors.onSurfaceTertiary }]}>
@@ -267,6 +291,10 @@ export default function DashboardScreen() {
                         <Metric icon="people" colors={colors} text={e.capacity > 0 ? `${e.checkins}/${e.capacity}` : String(e.checkins)} />
                         <Metric icon="bookmark" colors={colors} text={String(e.saves)} />
                         {e.rating_count > 0 && <Metric icon="star" iconColor="#FFD60A" colors={colors} text={`${e.rating.toFixed(1)} (${e.rating_count})`} />}
+                        {!!e.offer_title && (
+                          <Metric icon="gift" iconColor={colors.accent} colors={colors}
+                            text={e.offer_limit ? `${e.deals_claimed}/${e.offer_limit}` : String(e.deals_claimed)} />
+                        )}
                         {e.pending_requests > 0 && (
                           <View style={[styles.pill, { backgroundColor: colors.accent }]}>
                             <Text style={[styles.pillText, { color: colors.onAccent }]}>
@@ -479,6 +507,9 @@ const styles = StyleSheet.create({
   emptyBody: { fontSize: 14, lineHeight: 20, textAlign: "center" },
   primaryBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 50, borderRadius: 14, paddingHorizontal: 24, marginTop: 6 },
   primaryBtnText: { fontSize: 16, fontWeight: "800" },
+  dealsCard: { padding: 14, borderRadius: 16, borderWidth: 1, gap: 12 },
+  dealsIcon: { width: 38, height: 38, borderRadius: 11, alignItems: "center", justifyContent: "center" },
+  scanBtn: { alignSelf: "stretch", marginTop: 0 },
   sheetBg: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "flex-end" },
   sheet: { borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, gap: 10 },
   sheetTitle: { fontSize: 18, fontWeight: "800" },

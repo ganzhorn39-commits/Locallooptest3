@@ -10,15 +10,42 @@ async function authHeaders(): Promise<Record<string, string>> {
   return h;
 }
 
+// Errors keep the "<status>: <body>" message; `status` and the parsed `detail` are attached for callers that need them.
+export type ApiError = Error & { status?: number; detail?: any };
+
 async function req(path: string, options: RequestInit = {}) {
   const headers = { ...(await authHeaders()), ...(options.headers || {}) };
   const res = await fetch(`${BASE}/api${path}`, { ...options, headers });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`${res.status}: ${text}`);
+    const err: ApiError = new Error(`${res.status}: ${text}`);
+    err.status = res.status;
+    try { err.detail = JSON.parse(text).detail; } catch {}
+    throw err;
   }
   return res.json();
 }
+
+// A claimed offer. `qr` is what the QR code encodes; the business scans it to redeem the deal once.
+export type Deal = {
+  id: string;
+  code: string;
+  qr: string;
+  offer_title: string;
+  event_id: string;
+  event_title: string;
+  business_name: string;
+  start_time?: string | null;
+  next_occurrence?: string | null;
+  is_recurring?: boolean;
+  recurrence_label?: string;
+  claimed_at: string;
+  redeemed_at?: string | null;
+  status: "active" | "redeemed" | "cancelled" | "expired";
+  already?: boolean;
+};
+
+export type RedeemResult = Deal & { guest_name: string; guest_picture?: string };
 
 export type EventItem = {
   id: string;
@@ -57,6 +84,9 @@ export type EventItem = {
   age_restricted?: boolean;
   status?: "active" | "cancelled";
   cancelled_at?: string | null;
+  offer_title?: string;
+  offer_limit?: number;
+  offer_claimed?: number;
 };
 
 // Host dashboard (GET /my/dashboard) — real numbers only, no simulated live counts.
@@ -80,6 +110,10 @@ export type DashboardEvent = {
   saves: number;
   reviews: number;
   pending_requests: number;
+  offer_title: string;
+  offer_limit: number;
+  deals_claimed: number;
+  deals_redeemed: number;
 };
 
 export type DashboardRequest = {
@@ -114,6 +148,9 @@ export type Dashboard = {
     pending_requests: number;
     rating: number;
     rating_count: number;
+    offers: number;
+    deals_claimed: number;
+    deals_redeemed: number;
   };
   checkins_by_day: { date: string; count: number }[];
   events: DashboardEvent[];
@@ -148,6 +185,13 @@ export const api = {
   mySaved: (): Promise<EventItem[]> => req(`/my/saved`),
   myAttending: (): Promise<EventItem[]> => req(`/my/attending`),
   myDashboard: (): Promise<Dashboard> => req(`/my/dashboard?tz_offset=${new Date().getTimezoneOffset()}`),
+
+  // Deals (business offers)
+  claimDeal: (eventId: string): Promise<Deal> => req(`/events/${eventId}/deal`, { method: "POST" }),
+  myEventDeal: (eventId: string): Promise<{ deal: Deal | null }> => req(`/events/${eventId}/deal`),
+  myDeals: (): Promise<Deal[]> => req(`/my/deals`),
+  redeemDeal: (code: string): Promise<RedeemResult> =>
+    req(`/deals/redeem`, { method: "POST", body: JSON.stringify({ code }) }),
 
   // Push
   registerPush: (payload: { user_id: string; platform: string; device_token: string }) =>

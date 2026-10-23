@@ -12,6 +12,7 @@ import { useI18n } from "@/src/i18n";
 import { useAuth } from "@/src/auth/AuthContext";
 import { categoryMeta } from "@/src/constants/categories";
 import { api, EventItem } from "@/src/api/client";
+import DealCard from "@/src/components/DealCard";
 
 import { countdown } from "@/src/utils/filters";
 
@@ -213,6 +214,8 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
             {checkedIn ? t("going") : soldOut ? t("sold_out") : atVenue ? `${t("at_venue")} · ${t("checkin_cta")}` : t("checkin_cta")}
           </Text>
         </Pressable>
+
+        <DealCard key={event.id} event={event} checkedIn={checkedIn} />
 
         {/* Attendees */}
         {attendeeList.length > 0 && (

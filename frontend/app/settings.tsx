@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Switch, ScrollView, Modal } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Ionicons from "@react-native-vector-icons/ionicons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useTheme } from "@/src/theme/theme";
 import { useAuth } from "@/src/auth/AuthContext";
 import { useI18n } from "@/src/i18n";
@@ -21,6 +21,13 @@ export default function Settings() {
   const [legal, setLegal] = useState<null | "terms" | "privacy">(null);
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [activeDeals, setActiveDeals] = useState(0);
+
+  useFocusEffect(useCallback(() => {
+    let alive = true;
+    api.myDeals().then((d) => { if (alive) setActiveDeals(d.filter((x) => x.status === "active").length); }).catch(() => {});
+    return () => { alive = false; };
+  }, []));
 
   useEffect(() => {
     (async () => {
@@ -41,6 +48,24 @@ export default function Settings() {
       </View>
 
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 40, gap: 20 }}>
+        {/* Deals: claimed offers with their QR codes */}
+        <Section title={t("deals")} colors={colors}>
+          <Pressable testID="settings-deals" onPress={() => router.push("/deals")} style={[styles.linkRow, { borderColor: colors.border }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Ionicons name="gift-outline" size={18} color={colors.accent} />
+              <Text style={[styles.linkText, { color: colors.onSurface }]}>{t("my_deals")}</Text>
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              {activeDeals > 0 && (
+                <View testID="settings-deals-count" style={[styles.countBadge, { backgroundColor: colors.accent }]}>
+                  <Text style={[styles.countText, { color: colors.onAccent }]}>{activeDeals}</Text>
+                </View>
+              )}
+              <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
+            </View>
+          </Pressable>
+        </Section>
+
         {/* Language */}
         <Section title={t("language")} colors={colors}>
           <View style={styles.langRow}>
@@ -201,6 +226,8 @@ const styles = StyleSheet.create({
   rowLabel: { fontSize: 15, fontWeight: "500" },
   linkRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 14, height: 52, borderRadius: 12, borderWidth: 1 },
   linkText: { fontSize: 15, fontWeight: "600" },
+  countBadge: { minWidth: 22, height: 22, borderRadius: 11, paddingHorizontal: 6, alignItems: "center", justifyContent: "center" },
+  countText: { fontSize: 12, fontWeight: "900" },
   themeRow: { flexDirection: "row", alignItems: "center", gap: 14, paddingHorizontal: 14, paddingVertical: 12, borderRadius: 12 },
   themeSwatch: { width: 44, height: 44, borderRadius: 12, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   themeSwatchDot: { width: 18, height: 18, borderRadius: 9 },

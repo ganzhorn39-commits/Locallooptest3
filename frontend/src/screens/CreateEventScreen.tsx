@@ -8,6 +8,7 @@ import { Calendar } from "react-native-calendars";
 import * as Haptics from "expo-haptics";
 import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
+import { useAuth } from "@/src/auth/AuthContext";
 import { api, EventItem } from "@/src/api/client";
 import { DEFAULT_REGION, CATEGORIES, CategoryKey } from "@/src/constants/categories";
 import LocationPicker from "@/src/components/LocationPicker";
@@ -50,8 +51,10 @@ const asCategory = (v?: string): CategoryKey =>
 export default function CreateEventScreen({ onDone, showClose, initial }: { onDone: () => void; showClose?: boolean; initial?: EventItem }) {
   const { colors } = useTheme();
   const { t } = useI18n();
+  const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const editing = !!initial;
+  const isBiz = user?.account_type === "business"; // only business accounts can attach a deal
   const start = initial ? new Date(initial.start_time) : null;
   const hasStart = !!start && !isNaN(start.getTime());
   // A category stock photo stays "no banner", so the picture follows a category change.
@@ -81,6 +84,9 @@ export default function CreateEventScreen({ onDone, showClose, initial }: { onDo
   const [days, setDays] = useState<number[]>(initial?.recurrence_days || []);
   const [joinApproval, setJoinApproval] = useState<"auto" | "manual">(initial?.join_approval || "auto");
   const [ageRestricted, setAgeRestricted] = useState(!!initial?.age_restricted);
+  const [hasOffer, setHasOffer] = useState(!!initial?.offer_title);
+  const [offerTitle, setOfferTitle] = useState(initial?.offer_title || "");
+  const [offerLimit, setOfferLimit] = useState(initial?.offer_limit ? String(initial.offer_limit) : "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -97,6 +103,10 @@ export default function CreateEventScreen({ onDone, showClose, initial }: { onDo
     const cap = parseInt(capacity, 10) || 0;
     const going = initial?.spots_taken ?? initial?.checkins ?? 0;
     if (editing && cap > 0 && cap < going) { setError(t("edit_capacity_error").replace("{n}", String(going))); return; }
+    const dealLimit = hasOffer ? parseInt(offerLimit, 10) || 0 : 0;
+    const dealsGone = initial?.offer_claimed ?? 0;
+    if (isBiz && hasOffer && !offerTitle.trim()) { setError(t("offer_required")); return; }
+    if (isBiz && dealLimit > 0 && dealLimit < dealsGone) { setError(t("offer_limit_error").replace("{n}", String(dealsGone))); return; }
     setError(""); setSubmitting(true);
     try {
       const when = new Date(dateISO + "T00:00:00");
@@ -115,6 +125,8 @@ export default function CreateEventScreen({ onDone, showClose, initial }: { onDo
         is_recurring: isRecurring && days.length > 0, recurrence_freq: freq,
         recurrence_days: isRecurring ? days : [], recurrence_label: recLabel,
         join_approval: joinApproval, age_restricted: ageRestricted,
+        // Non-business accounts never send deal fields (the backend would refuse them).
+        ...(isBiz ? { offer_title: hasOffer ? offerTitle.trim() : "", offer_limit: dealLimit } : {}),
       };
       if (initial) {
         // Keep the stored timestamp when the date/time was not touched (avoids a false "time changed" notice).
@@ -130,7 +142,9 @@ export default function CreateEventScreen({ onDone, showClose, initial }: { onDo
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       const msg = String(e?.message || "");
       const full = msg.match(/check-ins \((\d+)\)/);
-      if (!editing) setError(t("create_failed"));
+      const dealsTaken = msg.match(/claimed deals \((\d+)\)/);
+      if (dealsTaken) setError(t("offer_limit_error").replace("{n}", dealsTaken[1]));
+      else if (!editing) setError(t("create_failed"));
       else if (full) setError(t("edit_capacity_error").replace("{n}", full[1]));
       else if (msg.startsWith("409")) setError(t("edit_cancelled"));
       else setError(t("edit_failed"));
@@ -244,6 +258,29 @@ export default function CreateEventScreen({ onDone, showClose, initial }: { onDo
           <TextInput testID="input-capacity" value={capacity} onChangeText={(v) => setCapacity(v.replace(/[^0-9]/g, ""))} placeholder="0 = unlimited" keyboardType="number-pad" placeholderTextColor={colors.onSurfaceTertiary} style={inputStyle} />
         </Field>
 
+        {isBiz && (
+          <Field label={t("offer_section")} colors={colors}>
+            <View style={[styles.recurRow, { backgroundColor: colors.surfaceTertiary, borderColor: hasOffer ? colors.accent : colors.border }]}>
+              <Ionicons name="gift" size={20} color={colors.accent} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.onSurface, fontSize: 14, fontWeight: "600" }}>{t("offer_toggle")}</Text>
+                <Text style={[styles.hintText, { color: colors.onSurfaceTertiary, marginTop: 2 }]}>{t("offer_toggle_hint")}</Text>
+              </View>
+              <Switch testID="offer-toggle" value={hasOffer} onValueChange={setHasOffer} trackColor={{ true: colors.brand, false: colors.borderStrong }} />
+            </View>
+            {hasOffer && (
+              <>
+                <Text style={[styles.subLabel, { color: colors.onSurfaceTertiary }]}>{t("offer_title_label")}</Text>
+                <TextInput testID="input-offer-title" value={offerTitle} onChangeText={setOfferTitle} maxLength={80}
+                  placeholder={t("offer_title_ph")} placeholderTextColor={colors.onSurfaceTertiary} style={inputStyle} />
+                <Text style={[styles.subLabel, { color: colors.onSurfaceTertiary }]}>{t("offer_limit_label")}</Text>
+                <TextInput testID="input-offer-limit" value={offerLimit} onChangeText={(v) => setOfferLimit(v.replace(/[^0-9]/g, ""))}
+                  keyboardType="number-pad" placeholder={t("offer_limit_ph")} placeholderTextColor={colors.onSurfaceTertiary} style={inputStyle} />
+              </>
+            )}
+          </Field>
+        )}
+
         <Field label={t("join_approval_label")} colors={colors}>
           <View style={styles.catRow}>
             {([
@@ -338,6 +375,7 @@ const styles = StyleSheet.create({
   catChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, height: 40, borderRadius: 999, borderWidth: 1 },
   catChipText: { fontSize: 14, fontWeight: "600" },
   hintText: { fontSize: 12, marginTop: 6, lineHeight: 16 },
+  subLabel: { fontSize: 12, fontWeight: "700", marginTop: 10 },
   dateBtn: { flexDirection: "row", alignItems: "center", gap: 10, height: 50, borderRadius: 12, borderWidth: 1, paddingHorizontal: 14 },
   dateText: { fontSize: 15, fontWeight: "600" },
   banner: { height: 130, borderRadius: 12, borderWidth: 1, overflow: "hidden", justifyContent: "flex-end" },

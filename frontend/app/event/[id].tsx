@@ -10,6 +10,7 @@ import { useAuth } from "@/src/auth/AuthContext";
 import { api, EventItem } from "@/src/api/client";
 import { categoryMeta } from "@/src/constants/categories";
 import { countdown } from "@/src/utils/filters";
+import DealCard from "@/src/components/DealCard";
 
 export default function EventDetail() {
   const { colors } = useTheme();
@@ -57,6 +58,7 @@ export default function EventDetail() {
           {!!e.capacity && e.capacity > 0 && <Row icon="people-outline" color={colors.brand} text={`${e.spots_taken || 0}/${e.capacity}`} colors={colors} />}
           {!!e.rating && e.rating > 0 && <Row icon="star" color="#FFD60A" text={`${e.rating.toFixed(1)} (${e.rating_count})`} colors={colors} />}
           {!!e.description && <Text style={[styles.desc, { color: colors.onSurfaceSecondary }]}>{e.description}</Text>}
+          <DealCard key={e.id} event={e} />
           <Pressable testID="event-detail-participants" onPress={() => router.push(`/participants/${id}`)} style={[styles.linkBtn, { backgroundColor: colors.surfaceTertiary, borderColor: colors.border }]}>
             <Ionicons name="people" size={18} color={colors.brand} />
             <Text style={[styles.linkText, { color: colors.onSurface }]}>{e.live_count} {t("attending")}</Text>

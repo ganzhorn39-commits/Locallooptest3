@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 import os
 import logging
 import random
@@ -74,6 +75,8 @@ class EventCreate(BaseModel):
     recurrence_label: str = ""
     join_approval: str = "auto"  # auto | manual
     age_restricted: bool = False
+    offer_title: str = ""  # business accounts only, e.g. "10% auf Kaffee"
+    offer_limit: int = 0  # how many deals can be claimed in total; 0 = unlimited
 
 
 class Event(BaseModel):
@@ -105,6 +108,9 @@ class Event(BaseModel):
     age_restricted: bool = False
     status: str = "active"  # active | cancelled
     cancelled_at: Optional[str] = None
+    offer_title: str = ""
+    offer_limit: int = 0
+    offer_claimed: int = 0  # deals handed out (kept in sync with db.deals, used to enforce the limit atomically)
     checkins: int = 0
     created_by: str = "demo"
     created_at: str = Field(default_factory=lambda: now_utc().isoformat())
@@ -278,9 +284,29 @@ async def get_event(event_id: str):
     return with_live_count(doc)
 
 
+OFFER_MAX_LEN = 80
+
+
+async def check_offer(user: dict, title: str, limit: int, event_id: Optional[str] = None):
+    """Validate an event offer. Only business accounts may attach one; returns (title, limit)."""
+    title = (title or "").strip()
+    limit = max(0, int(limit or 0))
+    if len(title) > OFFER_MAX_LEN:
+        raise HTTPException(status_code=400, detail=f"Offer text is too long (max {OFFER_MAX_LEN})")
+    if title and user.get("account_type") != "business":
+        raise HTTPException(status_code=403, detail="Only business accounts can add offers")
+    if event_id and limit:
+        claimed = await db.deals.count_documents({"event_id": event_id})
+        if limit < claimed:
+            raise HTTPException(status_code=409, detail=f"Offer limit below claimed deals ({claimed})")
+    return title, limit
+
+
 @api_router.post("/events")
 async def create_event(payload: EventCreate, user=Depends(get_current_user)):
-    event = Event(**payload.dict(), created_by=user["user_id"])
+    data = payload.dict()
+    data["offer_title"], data["offer_limit"] = await check_offer(user, data["offer_title"], data["offer_limit"])
+    event = Event(**data, created_by=user["user_id"])
     await db.events.insert_one(event.dict())
     return with_live_count(event.dict())
 
@@ -309,6 +335,8 @@ class EventUpdate(BaseModel):
     recurrence_label: Optional[str] = None
     join_approval: Optional[str] = None
     age_restricted: Optional[bool] = None
+    offer_title: Optional[str] = None  # "" removes the offer (already claimed deals stay valid)
+    offer_limit: Optional[int] = None
 
 
 @api_router.patch("/events/{event_id}")
@@ -330,6 +358,11 @@ async def update_event(event_id: str, payload: EventUpdate, user=Depends(get_cur
         going = await db.checkins.count_documents({"event_id": event_id})
         if 0 < updates["capacity"] < going:
             raise HTTPException(status_code=409, detail=f"Capacity below current check-ins ({going})")
+    if "offer_title" in updates or "offer_limit" in updates:
+        updates["offer_title"], updates["offer_limit"] = await check_offer(
+            user, updates.get("offer_title", ev.get("offer_title", "")),
+            updates.get("offer_limit", ev.get("offer_limit", 0)), event_id,
+        )
     if not updates:
         return with_live_count(ev)
 
@@ -390,6 +423,10 @@ async def checkin(event_id: str, body: CheckinBody = CheckinBody(), user=Depends
     if already:
         await db.checkins.delete_one({"event_id": event_id, "user_id": uid})
         await db.events.update_one({"id": event_id}, {"$inc": {"checkins": -1}})
+        # Leaving the event hands an unused deal back to the pool (redeemed deals stay as history).
+        released = await db.deals.delete_one({"event_id": event_id, "user_id": uid, "redeemed_at": None})
+        if released.deleted_count:
+            await db.events.update_one({"id": event_id}, {"$inc": {"offer_claimed": -1}})
     elif pending_req:
         # toggle off a pending request
         await db.join_requests.delete_one({"event_id": event_id, "user_id": uid})
@@ -581,6 +618,13 @@ async def delete_profile(user=Depends(get_current_user)):
         await recompute_rating(r["event_id"])
     await db.crews.update_many({}, {"$pull": {"member_ids": uid}})
     await db.crew_suggestions.update_many({}, {"$pull": {"votes": uid}})
+    # Unused deals go back to the pool; redeemed ones stay for the host's numbers but lose the link to the person.
+    for d in await db.deals.find({"user_id": uid}, {"_id": 0, "id": 1, "event_id": 1, "redeemed_at": 1}).to_list(None):
+        if d.get("redeemed_at"):
+            await db.deals.update_one({"id": d["id"]}, {"$set": {"user_id": f"deleted_{d['id']}"}})
+        else:
+            await db.deals.delete_one({"id": d["id"]})
+            await db.events.update_one({"id": d["event_id"]}, {"$inc": {"offer_claimed": -1}})
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
     return {"ok": True}
@@ -940,6 +984,8 @@ async def my_dashboard(tz_offset: int = 0, user=Depends(get_current_user)):
     checkins = await counts_by_event(db.checkins, {"event_id": {"$in": ids}})
     saves = await counts_by_event(db.saves, {"event_id": {"$in": ids}})
     reviews = await counts_by_event(db.reviews, {"event_id": {"$in": ids}})
+    deals = await counts_by_event(db.deals, {"event_id": {"$in": ids}})
+    redeemed = await counts_by_event(db.deals, {"event_id": {"$in": ids}, "redeemed_at": {"$ne": None}})
 
     # Open join requests (only for events that are not cancelled, only from users that still exist).
     req_docs = await db.join_requests.find(
@@ -981,6 +1027,8 @@ async def my_dashboard(tz_offset: int = 0, user=Depends(get_current_user)):
             "rating": float(e.get("rating", 0) or 0), "rating_count": int(e.get("rating_count", 0) or 0),
             "checkins": checkins.get(eid, 0), "saves": saves.get(eid, 0),
             "reviews": reviews.get(eid, 0), "pending_requests": pending.get(eid, 0),
+            "offer_title": e.get("offer_title", ""), "offer_limit": int(e.get("offer_limit", 0) or 0),
+            "deals_claimed": deals.get(eid, 0), "deals_redeemed": redeemed.get(eid, 0),
         })
     far = datetime.max.replace(tzinfo=timezone.utc)
     upcoming = sorted((r for r in rows if r["phase"] == "upcoming"), key=lambda r: parse_iso(r["next_occurrence"]) or far)
@@ -1009,12 +1057,170 @@ async def my_dashboard(tz_offset: int = 0, user=Depends(get_current_user)):
             "pending_requests": len(open_requests),
             "rating": rating,
             "rating_count": rating_count,
+            "offers": sum(1 for r in rows if r["offer_title"]),
+            "deals_claimed": sum(deals.values()),
+            "deals_redeemed": sum(redeemed.values()),
         },
         "checkins_by_day": [{"date": d.isoformat(), "count": per_day[d]} for d in days],
         "events": upcoming + past + cancelled,
         "requests": requests_out,
         "recent_reviews": recent_reviews,
     }
+
+
+# ----------------------------- Deals (business offers) -----------------------------
+# A business event can carry one offer ("10% auf Kaffee"). Attendees claim it once per event and get a
+# personal code; the QR code in the app encodes DEAL_QR_PREFIX + code. The host redeems it once by scanning.
+DEAL_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O/1/I, easy to read out loud
+DEAL_QR_PREFIX = "LOCALLOOP-DEAL:"
+
+
+def new_deal_code() -> str:
+    rng = random.SystemRandom()
+    return "".join(rng.choice(DEAL_ALPHABET) for _ in range(8))
+
+
+def normalize_deal_code(raw: str) -> str:
+    code = (raw or "").strip().upper()
+    if code.startswith(DEAL_QR_PREFIX):
+        code = code[len(DEAL_QR_PREFIX):]
+    return re.sub(r"[^A-Z0-9]", "", code)
+
+
+def deal_status(deal: dict, ev: Optional[dict], now: datetime) -> str:
+    if deal.get("redeemed_at"):
+        return "redeemed"
+    if not ev or ev.get("status") == "cancelled":
+        return "cancelled"
+    if event_phase(ev, now) == "past":
+        return "expired"
+    return "active"
+
+
+def deal_view(deal: dict, ev: Optional[dict], now: datetime, host: Optional[dict] = None) -> dict:
+    ev = ev or {}
+    host = host or {}
+    return {
+        "id": deal["id"], "code": deal["code"], "qr": DEAL_QR_PREFIX + deal["code"],
+        "offer_title": deal["offer_title"], "event_id": deal["event_id"],
+        "event_title": ev.get("title", ""),
+        "business_name": host.get("business_name") or ev.get("venue_name") or host.get("name") or "",
+        "start_time": ev.get("start_time"), "next_occurrence": compute_next_occurrence(ev) if ev else None,
+        "is_recurring": bool(ev.get("is_recurring")), "recurrence_label": ev.get("recurrence_label", ""),
+        "claimed_at": deal["claimed_at"], "redeemed_at": deal.get("redeemed_at"),
+        "status": deal_status(deal, ev, now),
+    }
+
+
+async def deal_host(deal_or_event_host_id: str) -> Optional[dict]:
+    return await db.users.find_one(
+        {"user_id": deal_or_event_host_id}, {"_id": 0, "user_id": 1, "name": 1, "business_name": 1})
+
+
+@api_router.post("/events/{event_id}/deal")
+async def claim_deal(event_id: str, user=Depends(get_current_user)):
+    ev = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not ev:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if not ev.get("offer_title"):
+        raise HTTPException(status_code=404, detail="This event has no offer")
+    uid = user["user_id"]
+    host = await deal_host(ev.get("created_by", ""))
+    existing = await db.deals.find_one({"event_id": event_id, "user_id": uid}, {"_id": 0})
+    if existing:  # one deal per person and event: just hand back the one they have
+        return {**deal_view(existing, ev, now_utc(), host), "already": True}
+    if ev.get("created_by") == uid:
+        raise HTTPException(status_code=403, detail="Hosts can't claim their own offer")
+    if ev.get("status") == "cancelled":
+        raise HTTPException(status_code=409, detail="Event cancelled")
+    if event_phase(ev, now_utc()) == "past":
+        raise HTTPException(status_code=409, detail="Event is over")
+    if not await db.checkins.find_one({"event_id": event_id, "user_id": uid}):
+        raise HTTPException(status_code=403, detail="Check in to claim this offer")
+
+    # Reserve one deal atomically, so the limit also holds when people claim at the same moment.
+    limit = int(ev.get("offer_limit", 0) or 0)
+    if limit:
+        res = await db.events.update_one(
+            {"id": event_id, "$or": [{"offer_claimed": {"$lt": limit}}, {"offer_claimed": {"$exists": False}}]},
+            {"$inc": {"offer_claimed": 1}},
+        )
+        if res.modified_count == 0:
+            raise HTTPException(status_code=409, detail="Offer sold out")
+    else:
+        await db.events.update_one({"id": event_id}, {"$inc": {"offer_claimed": 1}})
+
+    for _ in range(3):
+        deal = {
+            "id": str(uuid.uuid4()), "code": new_deal_code(), "event_id": event_id, "user_id": uid,
+            "host_id": ev.get("created_by"), "offer_title": ev["offer_title"],
+            "claimed_at": now_utc().isoformat(), "redeemed_at": None,
+        }
+        try:
+            await db.deals.insert_one(dict(deal))
+            return deal_view(deal, ev, now_utc(), host)
+        except DuplicateKeyError:
+            existing = await db.deals.find_one({"event_id": event_id, "user_id": uid}, {"_id": 0})
+            if existing:  # a parallel request by the same person won
+                await db.events.update_one({"id": event_id}, {"$inc": {"offer_claimed": -1}})
+                return {**deal_view(existing, ev, now_utc(), host), "already": True}
+            # otherwise the random code collided: try a new one
+    await db.events.update_one({"id": event_id}, {"$inc": {"offer_claimed": -1}})
+    raise HTTPException(status_code=503, detail="Could not create a deal, please try again")
+
+
+@api_router.get("/events/{event_id}/deal")
+async def my_event_deal(event_id: str, user=Depends(get_current_user)):
+    deal = await db.deals.find_one({"event_id": event_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not deal:
+        return {"deal": None}
+    ev = await db.events.find_one({"id": event_id}, {"_id": 0})
+    return {"deal": deal_view(deal, ev, now_utc(), await deal_host(deal["host_id"]))}
+
+
+@api_router.get("/my/deals")
+async def my_deals(user=Depends(get_current_user)):
+    deals = await db.deals.find({"user_id": user["user_id"]}, {"_id": 0}).sort("claimed_at", -1).to_list(200)
+    evs = await db.events.find({"id": {"$in": [d["event_id"] for d in deals]}}, {"_id": 0}).to_list(None)
+    evs = {e["id"]: e for e in evs}
+    hosts = await db.users.find(
+        {"user_id": {"$in": list({d["host_id"] for d in deals})}},
+        {"_id": 0, "user_id": 1, "name": 1, "business_name": 1},
+    ).to_list(None)
+    hosts = {h["user_id"]: h for h in hosts}
+    now = now_utc()
+    out = [deal_view(d, evs.get(d["event_id"]), now, hosts.get(d["host_id"])) for d in deals]
+    out.sort(key=lambda d: d["status"] != "active")  # usable deals first, newest first within each group
+    return out
+
+
+class RedeemBody(BaseModel):
+    code: str
+
+
+@api_router.post("/deals/redeem")
+async def redeem_deal(body: RedeemBody, user=Depends(get_current_user)):
+    code = normalize_deal_code(body.code)
+    deal = await db.deals.find_one({"code": code}, {"_id": 0}) if code else None
+    if not deal:
+        raise HTTPException(status_code=404, detail="Unknown code")
+    if deal["host_id"] != user["user_id"]:
+        raise HTTPException(status_code=403, detail="This deal belongs to another business")
+    ev = await db.events.find_one({"id": deal["event_id"]}, {"_id": 0})
+    guest = await db.users.find_one({"user_id": deal["user_id"]}, {"_id": 0, "name": 1, "picture": 1}) or {}
+    status = deal_status(deal, ev, now_utc())
+    problem = {"reason": status, "offer_title": deal["offer_title"], "redeemed_at": deal.get("redeemed_at"),
+               "guest_name": guest.get("name") or "", "event_title": (ev or {}).get("title", "")}
+    if status != "active":  # tell the scanner why: redeemed / cancelled / expired
+        raise HTTPException(status_code=409, detail=problem)
+    redeemed_at = now_utc().isoformat()
+    res = await db.deals.update_one(
+        {"code": code, "redeemed_at": None}, {"$set": {"redeemed_at": redeemed_at, "redeemed_by": user["user_id"]}})
+    if res.modified_count == 0:  # scanned twice at the same moment
+        raise HTTPException(status_code=409, detail={**problem, "reason": "redeemed"})
+    deal["redeemed_at"] = redeemed_at
+    return {**deal_view(deal, ev, now_utc(), await deal_host(deal["host_id"])),
+            "guest_name": guest.get("name") or "Guest", "guest_picture": guest.get("picture") or ""}
 
 
 # ----------------------------- Seed -----------------------------
@@ -1170,6 +1376,9 @@ async def seed_and_index():
     await db.user_sessions.create_index("expires_at", expireAfterSeconds=0)
     await db.stories.create_index("expires_at", expireAfterSeconds=0)
     await db.crews.create_index("invite_code")
+    await db.deals.create_index("code", unique=True)
+    await db.deals.create_index([("event_id", 1), ("user_id", 1)], unique=True)
+    await db.deals.create_index("user_id")
     SEED_VERSION = 2
     meta = await db.meta.find_one({"key": "seed_version"})
     current_version = (meta or {}).get("value", 0)

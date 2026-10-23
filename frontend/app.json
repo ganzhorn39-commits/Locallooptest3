@@ -12,7 +12,7 @@
       "bundleIdentifier": "com.emergent.mapeventshub.ywobzy",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Show nearby events on your map",
-        "NSCameraUsageDescription": "Take photos to share event moments",
+        "NSCameraUsageDescription": "Take photos for verification and scan deal QR codes",
         "NSPhotoLibraryUsageDescription": "Choose photos for your profile and moments",
         "NSCalendarsUsageDescription": "Save events to your calendar",
         "NSCalendarsFullAccessUsageDescription": "Save events to your calendar"
