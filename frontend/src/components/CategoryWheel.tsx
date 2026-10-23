@@ -17,6 +17,9 @@ export default function CategoryWheel({
   const { colors } = useTheme();
   const { t } = useI18n();
   const listRef = useRef<FlatList>(null);
+  // Start with a pre-selected category in view (e.g. when editing); the first three are visible anyway.
+  const selectedIndex = CATEGORIES.findIndex((c) => c.key === value);
+  const startIndex = selectedIndex > 2 ? selectedIndex - 1 : undefined;
 
   const select = (k: CategoryKey, index: number) => {
     if (Platform.OS !== "web") Haptics.selectionAsync();
@@ -35,6 +38,7 @@ export default function CategoryWheel({
       decelerationRate="fast"
       contentContainerStyle={styles.row}
       getItemLayout={(_, index) => ({ length: ITEM_W + 10, offset: (ITEM_W + 10) * index, index })}
+      initialScrollIndex={startIndex}
       renderItem={({ item, index }) => {
         const active = value === item.key;
         return (
