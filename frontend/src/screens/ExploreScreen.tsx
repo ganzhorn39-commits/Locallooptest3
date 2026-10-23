@@ -9,6 +9,7 @@ import { useAuth } from "@/src/auth/AuthContext";
 import { useI18n } from "@/src/i18n";
 import { api, EventItem } from "@/src/api/client";
 import { filterEvents, QuickKey, sortByTime, topTrending } from "@/src/utils/filters";
+import { categoryLabel } from "@/src/constants/categories";
 import { isMinor } from "@/src/utils/age";
 import { useUserLocation } from "@/src/utils/useUserLocation";
 import { useNow } from "@/src/hooks/use-now";
@@ -63,10 +64,10 @@ export default function ExploreScreen() {
   const filtered = useMemo(() => {
     const base = filterEvents(events, {
       query, category: trendingMode ? "all" : category, quick, userLoc, radiusKm, hideRestricted: isMinor(user?.birthdate),
-      date, host, now,
+      date, host, now, categoryLabel: (e) => categoryLabel(e, t),
     });
     return trendingMode ? topTrending(base, 20) : sortByTime(base, now);
-  }, [events, query, category, trendingMode, quick, userLoc, radiusKm, user, date, host, now]);
+  }, [events, query, category, trendingMode, quick, userLoc, radiusKm, user, date, host, now, t]);
 
   const openEvent = useCallback(async (e: EventItem) => {
     setSelected(e);

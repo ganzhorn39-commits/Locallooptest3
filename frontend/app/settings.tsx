@@ -120,6 +120,8 @@ export default function Settings() {
           {([
             { key: "standard", label: t("theme_standard"), desc: t("theme_standard_desc"), swatch: ["#0A0B0D", "#159AB8"] },
             { key: "gold", label: t("theme_gold"), desc: t("theme_gold_desc"), swatch: ["#FFFFFF", "#C9A227"] },
+            { key: "sunset", label: t("theme_sunset"), desc: t("theme_sunset_desc"), swatch: ["#FFF8F3", "#E8501F"] },
+            { key: "mint", label: t("theme_mint"), desc: t("theme_mint_desc"), swatch: ["#0F1720", "#34D399"] },
           ] as const).map((o) => {
             const active = theme === o.key;
             return (

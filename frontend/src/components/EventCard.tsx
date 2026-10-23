@@ -5,7 +5,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
-import { categoryMeta } from "@/src/constants/categories";
+import { categoryLabel, categoryMeta } from "@/src/constants/categories";
 import { hasEnded, isLiveNow, recurrenceText, whenLabel } from "@/src/utils/eventTime";
 import type { EventItem } from "@/src/api/client";
 
@@ -40,7 +40,7 @@ export default function EventCard({
         <LinearGradient colors={["rgba(0,0,0,0.1)", "rgba(0,0,0,0.7)"]} style={StyleSheet.absoluteFill} />
         <View style={[styles.catBadge, { backgroundColor: catColor }]}>
           <Text style={{ fontSize: 12 }}>{event.emoji || meta.emoji}</Text>
-          <Text style={styles.catBadgeText}>{meta.label}</Text>
+          <Text style={styles.catBadgeText} numberOfLines={1}>{categoryLabel(event, t)}</Text>
         </View>
         <Pressable testID={`save-card-${event.id}`} onPress={onToggleSave} hitSlop={10} style={styles.saveBtn}>
           <Ionicons name={saved ? "bookmark" : "bookmark-outline"} size={20} color="#FFFFFF" />

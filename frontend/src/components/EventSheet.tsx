@@ -10,7 +10,7 @@ import { useRouter } from "expo-router";
 import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
 import { useAuth } from "@/src/auth/AuthContext";
-import { categoryMeta } from "@/src/constants/categories";
+import { categoryLabel, categoryMeta } from "@/src/constants/categories";
 import { api, EventItem } from "@/src/api/client";
 import DealCard from "@/src/components/DealCard";
 import { formatWhen, hasEnded, isLiveNow, recurrenceText, whenLabel } from "@/src/utils/eventTime";
@@ -120,7 +120,7 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
           <View style={styles.badgeRow}>
             <View style={[styles.catBadge, { backgroundColor: catColor }]}>
               <Text style={{ fontSize: 13 }}>{event.emoji || meta.emoji}</Text>
-              <Text style={styles.catBadgeText}>{meta.label}</Text>
+              <Text style={styles.catBadgeText} numberOfLines={1}>{categoryLabel(event, t)}</Text>
             </View>
             {event.is_recurring && !!event.recurrence_days?.length && (
               <View style={styles.recurringBadge} testID="recurring-badge">

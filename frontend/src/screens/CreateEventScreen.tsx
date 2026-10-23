@@ -10,7 +10,7 @@ import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
 import { useAuth } from "@/src/auth/AuthContext";
 import { api, errorCode, EventItem, profanityWords } from "@/src/api/client";
-import { DEFAULT_REGION, CATEGORIES, CategoryKey } from "@/src/constants/categories";
+import { DEFAULT_REGION, CATEGORIES, CategoryKey, CATEGORY_LABEL_MAX } from "@/src/constants/categories";
 import LocationPicker from "@/src/components/LocationPicker";
 import CategoryWheel from "@/src/components/CategoryWheel";
 import TimeWheel from "@/src/components/TimeWheel";
@@ -68,6 +68,7 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
   const todayISO = localDateISO(new Date());
   const [title, setTitle] = useState(initial?.title || "");
   const [category, setCategory] = useState<CategoryKey>(initial ? asCategory(initial.category) : "nightlife");
+  const [categoryLabel, setCategoryLabel] = useState(initial?.category_label || "");
   const [dateISO, setDateISO] = useState(hasStart ? localDateISO(start!) : todayISO);
   const [showCal, setShowCal] = useState(false);
   const [hour, setHour] = useState(hasStart ? start!.getHours() : 20);
@@ -100,7 +101,7 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
   const [error, setError] = useState("");
 
   const pickBanner = async () => {
-    const res = await pickImage(Platform.OS === "web" ? "library" : "library");
+    const res = await pickImage("library", "banner");
     if ("base64" in res) setBanner(res.base64);
   };
 
@@ -128,9 +129,11 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
         ? `${FREQS.find((f) => f.key === freq)?.label} · ${days.map((d) => WEEKDAYS[d]).join(", ")} at ${timeStr}`
         : "";
       const payload = {
-        title: title.trim(), category, start_time: when.toISOString(), end_time: hasEnd ? end.toISOString() : "",
+        title: title.trim(), category, category_label: category === "other" ? categoryLabel.trim() : "",
+        start_time: when.toISOString(), end_time: hasEnd ? end.toISOString() : "",
         description: description.trim(),
-        image_url: banner || CATEGORY_IMAGES[category], banner_url: banner || CATEGORY_IMAGES[category],
+        // An uploaded banner is stored once (image_url); banner_url only repeats short stock photo links.
+        image_url: banner || CATEGORY_IMAGES[category] || "", banner_url: banner ? "" : CATEGORY_IMAGES[category] || "",
         instagram: instagram.trim(), website: website.trim(), tickets_url: tickets.trim(),
         reservation_url: reservation.trim(), capacity: cap,
         latitude: coord.latitude, longitude: coord.longitude, address: address.trim(),
@@ -202,6 +205,13 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
 
         <Field label={t("category")} colors={colors}>
           <CategoryWheel value={category} onChange={setCategory} />
+          {category === "other" && (
+            <>
+              <TextInput testID="input-category-label" value={categoryLabel} onChangeText={setCategoryLabel} maxLength={CATEGORY_LABEL_MAX}
+                placeholder={t("category_label_ph")} placeholderTextColor={colors.onSurfaceTertiary} style={[inputStyle, { marginTop: 4 }]} />
+              <Text style={[styles.hintText, { color: colors.onSurfaceTertiary, marginTop: 0 }]}>{t("category_label_hint")}</Text>
+            </>
+          )}
         </Field>
 
         <Field label={t("date")} colors={colors}>

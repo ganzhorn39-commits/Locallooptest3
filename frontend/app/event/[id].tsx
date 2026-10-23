@@ -9,7 +9,7 @@ import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
 import { useAuth } from "@/src/auth/AuthContext";
 import { api, EventItem } from "@/src/api/client";
-import { categoryMeta } from "@/src/constants/categories";
+import { categoryLabel, categoryMeta } from "@/src/constants/categories";
 import { formatWhen, hasEnded, isLiveNow, whenLabel } from "@/src/utils/eventTime";
 import DealCard from "@/src/components/DealCard";
 import ActionSheet from "@/src/components/ActionSheet";
@@ -97,7 +97,7 @@ export default function EventDetail() {
           </View>
           <View style={styles.heroText}>
             <View style={styles.pillRow}>
-              <View style={[styles.catPill, { backgroundColor: meta.color }]}><Text style={styles.catPillText}>{meta.emoji} {t(`cat_${e.category}`)}</Text></View>
+              <View style={[styles.catPill, { backgroundColor: meta.color }]}><Text style={styles.catPillText}>{e.emoji || meta.emoji} {categoryLabel(e, t)}</Text></View>
               {cancelled && <View style={[styles.catPill, { backgroundColor: colors.error }]}><Text style={styles.catPillText}>{t("cancelled_badge")}</Text></View>}
               {live && <View testID="event-detail-live" style={[styles.catPill, { backgroundColor: "#FF3B30" }]}><Text style={styles.catPillText}>● {t("live_now")}</Text></View>}
             </View>

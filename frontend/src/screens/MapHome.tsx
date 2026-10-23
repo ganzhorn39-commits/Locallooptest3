@@ -11,7 +11,7 @@ import { useTheme } from "@/src/theme/theme";
 import { useAuth } from "@/src/auth/AuthContext";
 import { useI18n } from "@/src/i18n";
 import { api, EventItem } from "@/src/api/client";
-import { DEFAULT_REGION } from "@/src/constants/categories";
+import { categoryLabel, DEFAULT_REGION } from "@/src/constants/categories";
 import { filterEvents, QuickKey, topTrending } from "@/src/utils/filters";
 import { eventWindow } from "@/src/utils/eventTime";
 import { isMinor } from "@/src/utils/age";
@@ -67,10 +67,10 @@ export default function MapHome() {
   const filtered = useMemo(() => {
     const base = filterEvents(events, {
       query, category: category === "trending" ? "all" : category, quick, userLoc, radiusKm,
-      hideRestricted: isMinor(user?.birthdate), date, host, now,
+      hideRestricted: isMinor(user?.birthdate), date, host, now, categoryLabel: (e) => categoryLabel(e, t),
     });
     return category === "trending" ? topTrending(base) : base;
-  }, [events, query, category, quick, userLoc, radiusKm, user, date, host, now]);
+  }, [events, query, category, quick, userLoc, radiusKm, user, date, host, now, t]);
 
   // The map is native only; the web preview shows a stylised canvas without a real position.
   const locate = useCallback(async (): Promise<Coords | null> => {

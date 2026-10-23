@@ -152,7 +152,8 @@ def now_utc():
 
 class EventCreate(BaseModel):
     title: str
-    category: str  # nightlife | food | sports | culture
+    category: str  # nightlife | food | sports | ... | other
+    category_label: str = ""  # own short text for category "other" ("Sonstiges")
     start_time: str  # ISO string
     end_time: str = ""  # optional ISO string; without it the event is assumed to last 3 hours
     description: str = ""
@@ -182,6 +183,7 @@ class Event(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     title: str
     category: str
+    category_label: str = ""
     start_time: str
     end_time: str = ""
     description: str = ""
@@ -483,6 +485,19 @@ async def check_offer(user: dict, title: str, limit: int, event_id: Optional[str
     return title, limit
 
 
+CATEGORY_LABEL_MAX = 30
+
+
+def clean_category_label(category: str, label: Optional[str]) -> str:
+    """Own text for "Sonstiges" (category "other"); dropped for every other category."""
+    label = " ".join((label or "").split())
+    if category != "other":
+        return ""
+    if len(label) > CATEGORY_LABEL_MAX:
+        raise HTTPException(status_code=400, detail={"code": "category_label_too_long", "message": f"At most {CATEGORY_LABEL_MAX} characters"})
+    return label
+
+
 def check_times(start_iso: Optional[str], end_iso: Optional[str]):
     """Start must be a valid time; an end time (optional) must come after it and within 7 days."""
     start = parse_iso(start_iso)
@@ -502,7 +517,8 @@ def check_times(start_iso: Optional[str], end_iso: Optional[str]):
 @api_router.post("/events")
 async def create_event(payload: EventCreate, user=Depends(get_current_user)):
     data = payload.dict()
-    reject_bad_words({k: data.get(k) for k in ("title", "description", "offer_title", "venue_name")})
+    reject_bad_words({k: data.get(k) for k in ("title", "description", "offer_title", "venue_name", "category_label")})
+    data["category_label"] = clean_category_label(data["category"], data.get("category_label"))
     data["end_time"] = (data.get("end_time") or "").strip()
     check_times(data["start_time"], data["end_time"])
     if lifecycle(data) in ("ended", "past"):  # a running event is fine ("we're here, come by")
@@ -517,6 +533,7 @@ class EventUpdate(BaseModel):
     # Every field optional: only what is sent gets changed. Host/status/counters are not editable here.
     title: Optional[str] = None
     category: Optional[str] = None
+    category_label: Optional[str] = None
     start_time: Optional[str] = None
     end_time: Optional[str] = None  # "" removes the end time
     description: Optional[str] = None
@@ -548,7 +565,10 @@ async def update_event(event_id: str, payload: EventUpdate, user=Depends(get_cur
     if ev.get("status") == "cancelled":
         raise HTTPException(status_code=409, detail="Event cancelled")
     updates = {k: v for k, v in payload.dict().items() if v is not None}
-    reject_bad_words({k: updates.get(k) for k in ("title", "description", "offer_title", "venue_name")})
+    reject_bad_words({k: updates.get(k) for k in ("title", "description", "offer_title", "venue_name", "category_label")})
+    if "category" in updates or "category_label" in updates:
+        updates["category_label"] = clean_category_label(
+            updates.get("category", ev.get("category", "")), updates.get("category_label", ev.get("category_label", "")))
     if "title" in updates:
         updates["title"] = updates["title"].strip()
         if not updates["title"]:

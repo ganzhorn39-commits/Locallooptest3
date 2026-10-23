@@ -32,6 +32,7 @@ export function filterEvents(
     query?: string; category?: string; quick?: QuickKey[];
     userLoc?: { latitude: number; longitude: number } | null; radiusKm?: number | null;
     hideRestricted?: boolean; date?: DateFilter; host?: HostFilter; now?: number;
+    categoryLabel?: (e: EventItem) => string; // translated category name, so "Essen" finds food events
   }
 ): EventItem[] {
   const q = (opts.query || "").trim().toLowerCase();
@@ -44,7 +45,7 @@ export function filterEvents(
     if (opts.host === "business" && !e.host_is_business) return false;
     if (opts.date && !matchesDate(e, opts.date, now)) return false;
     if (q) {
-      const hay = `${e.title} ${e.category} ${e.address} ${e.description} ${e.venue_name || ""} ${e.host_name || ""}`.toLowerCase();
+      const hay = `${e.title} ${e.category} ${e.category_label || ""} ${opts.categoryLabel?.(e) || ""} ${e.address} ${e.description} ${e.venue_name || ""} ${e.host_name || ""}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     if (quick.includes("live") && !isLiveNow(e, now)) return false;

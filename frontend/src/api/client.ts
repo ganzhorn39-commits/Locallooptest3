@@ -84,6 +84,7 @@ export type EventItem = {
   id: string;
   title: string;
   category: string;
+  category_label?: string; // own text for category "other" ("Sonstiges")
   start_time: string;
   end_time?: string; // optional; without it the event counts as 3 hours long
   description: string;

@@ -10,7 +10,8 @@ export type CategoryKey =
   | "workshops"
   | "music"
   | "restaurant"
-  | "cafe";
+  | "cafe"
+  | "other";
 
 export type CategoryMeta = {
   key: CategoryKey;
@@ -34,14 +35,25 @@ export const CATEGORIES: CategoryMeta[] = [
   { key: "music", label: "Music & Concerts", color: "#2DD4BF", icon: "musical-notes", emoji: "🎵" },
   { key: "restaurant", label: "Restaurant", color: "#F59E9E", icon: "restaurant", emoji: "🍽️" },
   { key: "cafe", label: "Café", color: "#C8A27C", icon: "cafe", emoji: "☕" },
+  // "Sonstiges": hosts type their own short label (event.category_label) when nothing else fits.
+  { key: "other", label: "Other", color: "#94A3B8", icon: "ellipsis-horizontal-circle", emoji: "✨" },
 ];
 
-const FALLBACK: CategoryMeta = CATEGORIES[0];
+export const CATEGORY_LABEL_MAX = 30;
+
+const FALLBACK: CategoryMeta = CATEGORIES[CATEGORIES.length - 1]; // unknown categories show as "Sonstiges"
 
 export const categoryMeta = (cat: string): CategoryMeta =>
   CATEGORIES.find((c) => c.key === cat) || FALLBACK;
 
 export const categoryColor = (cat: string): string => categoryMeta(cat).color;
+
+// Display name of an event's category: the host's own text for "Sonstiges", otherwise the translated name.
+export const categoryLabel = (e: { category: string; category_label?: string }, t: (k: string) => string): string => {
+  if (e.category === "other" && e.category_label?.trim()) return e.category_label.trim();
+  const key = CATEGORIES.some((c) => c.key === e.category) ? e.category : "other";
+  return t(`cat_${key}`);
+};
 
 // Categories that are age-restricted (18+) — nightlife / alcohol tagged.
 export const isAgeRestricted = (cat: string): boolean => !!categoryMeta(cat).nightlife;
