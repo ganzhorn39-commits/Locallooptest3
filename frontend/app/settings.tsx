@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Switch, ScrollView, Modal } from "react-native";
+import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { useFocusEffect, useRouter } from "expo-router";
@@ -8,6 +9,9 @@ import { useAuth } from "@/src/auth/AuthContext";
 import { useI18n } from "@/src/i18n";
 import { storage } from "@/src/utils/storage";
 import { api } from "@/src/api/client";
+import { LEGAL_DOCS, legalText } from "@/src/legal/content";
+
+type BlockedUser = { user_id: string; name?: string; picture?: string; account_type?: string; business_name?: string };
 
 export default function Settings() {
   const { colors, theme, setTheme } = useTheme();
@@ -18,16 +22,25 @@ export default function Settings() {
   const [notifEvents, setNotifEvents] = useState(true);
   const [notifMessages, setNotifMessages] = useState(true);
   const [locationOn, setLocationOn] = useState(true);
-  const [legal, setLegal] = useState<null | "terms" | "privacy">(null);
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [activeDeals, setActiveDeals] = useState(0);
+  const [blocked, setBlocked] = useState<BlockedUser[]>([]);
+  const [showBlocked, setShowBlocked] = useState(false);
 
   useFocusEffect(useCallback(() => {
     let alive = true;
     api.myDeals().then((d) => { if (alive) setActiveDeals(d.filter((x) => x.status === "active").length); }).catch(() => {});
+    api.myBlocks().then((b) => { if (alive) setBlocked(b); }).catch(() => {});
     return () => { alive = false; };
   }, []));
+
+  const unblock = async (id: string) => {
+    try {
+      await api.toggleBlock(id);
+      setBlocked((list) => list.filter((b) => b.user_id !== id));
+    } catch {}
+  };
 
   useEffect(() => {
     (async () => {
@@ -143,16 +156,28 @@ export default function Settings() {
           </Pressable>
         </Section>
 
-        {/* Legal */}
+        {/* Privacy & safety */}
+        <Section title={t("privacy_section")} colors={colors}>
+          <Pressable testID="settings-blocked" onPress={() => setShowBlocked(true)} style={[styles.linkRow, { borderColor: colors.border }]}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+              <Ionicons name="ban-outline" size={18} color={colors.error} />
+              <Text style={[styles.linkText, { color: colors.onSurface }]}>{t("blocked_users")}</Text>
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              {blocked.length > 0 && <Text style={[styles.linkText, { color: colors.onSurfaceTertiary }]}>{blocked.length}</Text>}
+              <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
+            </View>
+          </Pressable>
+        </Section>
+
+        {/* Legal: Impressum, Datenschutz, Nutzungsbedingungen */}
         <Section title={t("legal")} colors={colors}>
-          <Pressable testID="legal-terms" onPress={() => setLegal("terms")} style={[styles.linkRow, { borderColor: colors.border }]}>
-            <Text style={[styles.linkText, { color: colors.onSurface }]}>{t("terms")}</Text>
-            <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
-          </Pressable>
-          <Pressable testID="legal-privacy" onPress={() => setLegal("privacy")} style={[styles.linkRow, { borderColor: colors.border }]}>
-            <Text style={[styles.linkText, { color: colors.onSurface }]}>{t("privacy")}</Text>
-            <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
-          </Pressable>
+          {LEGAL_DOCS.map((doc) => (
+            <Pressable key={doc} testID={`legal-${doc}-row`} onPress={() => router.push(`/legal/${doc}`)} style={[styles.linkRow, { borderColor: colors.border }]}>
+              <Text style={[styles.linkText, { color: colors.onSurface }]}>{legalText(doc, lang).title}</Text>
+              <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
+            </Pressable>
+          ))}
         </Section>
 
         <Pressable testID="logout-button" onPress={async () => { await logout(); router.replace("/login"); }} style={[styles.logout, { backgroundColor: colors.error }]}>
@@ -182,12 +207,30 @@ export default function Settings() {
         </Pressable>
       </Modal>
 
-      <Modal visible={!!legal} transparent animationType="fade" onRequestClose={() => setLegal(null)}>
-        <Pressable style={styles.modalBg} onPress={() => setLegal(null)}>
-          <Pressable style={[styles.modalCard, { backgroundColor: colors.surfaceSecondary }]}>
-            <Text style={[styles.modalTitle, { color: colors.onSurface }]}>{legal === "terms" ? t("terms") : t("privacy")}</Text>
-            <Text style={[styles.modalBody, { color: colors.onSurfaceSecondary }]}>{legal === "terms" ? t("terms_body") : t("privacy_body")}</Text>
-            <Pressable testID="legal-close" onPress={() => setLegal(null)} style={[styles.modalClose, { backgroundColor: colors.brand }]}>
+      <Modal visible={showBlocked} transparent animationType="fade" onRequestClose={() => setShowBlocked(false)}>
+        <Pressable style={styles.modalBg} onPress={() => setShowBlocked(false)}>
+          <Pressable testID="blocked-list" style={[styles.modalCard, { backgroundColor: colors.surfaceSecondary }]}>
+            <Text style={[styles.modalTitle, { color: colors.onSurface }]}>{t("blocked_users")}</Text>
+            {blocked.length === 0 ? (
+              <Text style={[styles.modalBody, { color: colors.onSurfaceTertiary }]}>{t("blocked_none")}</Text>
+            ) : (
+              blocked.map((b) => {
+                const name = (b.account_type === "business" && b.business_name) || b.name || t("guest");
+                return (
+                  <View key={b.user_id} style={styles.blockedRow} testID={`blocked-${b.user_id}`}>
+                    <View style={[styles.blockedAvatar, { backgroundColor: colors.surfaceTertiary }]}>
+                      {b.picture ? <Image source={{ uri: b.picture }} style={StyleSheet.absoluteFill} contentFit="cover" />
+                        : <Text style={{ color: colors.onSurface, fontWeight: "800" }}>{name.charAt(0).toUpperCase()}</Text>}
+                    </View>
+                    <Text style={[styles.linkText, { color: colors.onSurface, flex: 1 }]} numberOfLines={1}>{name}</Text>
+                    <Pressable testID={`unblock-${b.user_id}`} onPress={() => unblock(b.user_id)} style={[styles.unblockBtn, { borderColor: colors.border }]}>
+                      <Text style={[styles.unblockText, { color: colors.onSurface }]}>{t("unblock_user")}</Text>
+                    </Pressable>
+                  </View>
+                );
+              })
+            )}
+            <Pressable testID="blocked-close" onPress={() => setShowBlocked(false)} style={[styles.modalClose, { backgroundColor: colors.brand }]}>
               <Text style={styles.modalCloseText}>OK</Text>
             </Pressable>
           </Pressable>
@@ -249,4 +292,8 @@ const styles = StyleSheet.create({
   modalBody: { fontSize: 14, lineHeight: 21 },
   modalClose: { height: 46, borderRadius: 12, alignItems: "center", justifyContent: "center", marginTop: 4 },
   modalCloseText: { color: "#FFFFFF", fontSize: 15, fontWeight: "700" },
+  blockedRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  blockedAvatar: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", overflow: "hidden" },
+  unblockBtn: { paddingHorizontal: 12, height: 34, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  unblockText: { fontSize: 13, fontWeight: "700" },
 });

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, StyleSheet, Pressable, TextInput, ActivityIndicator, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, TextInput, ActivityIndicator, Platform, Modal } from "react-native";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
@@ -9,7 +9,7 @@ import * as Haptics from "expo-haptics";
 import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
 import { useAuth } from "@/src/auth/AuthContext";
-import { api } from "@/src/api/client";
+import { api, profanityWords } from "@/src/api/client";
 import { getAge } from "@/src/utils/age";
 import { pickImage } from "@/src/utils/pickImage";
 import { storage } from "@/src/utils/storage";
@@ -22,9 +22,14 @@ type Role = "user" | "business";
 const PENDING_ROLE_KEY = "pending_account_role";
 const DEFAULT_BIRTH = `${new Date().getFullYear() - 20}-06-15`;
 
+function formatBirthdate(iso: string, lang: string) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(lang === "de" ? "de-DE" : "en-US", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
 export default function Onboarding() {
   const { colors } = useTheme();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { user, refresh } = useAuth();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -42,6 +47,9 @@ export default function Onboarding() {
   const [bizInstagram, setBizInstagram] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [truth, setTruth] = useState(false);
+  const [terms, setTerms] = useState(false);
+  const [confirmBirth, setConfirmBirth] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -60,32 +68,38 @@ export default function Onboarding() {
     if ("base64" in res) setPicture(res.base64);
   };
 
+  const save = async (payload: Record<string, unknown>) => {
+    setSaving(true);
+    try {
+      // Both confirmations are stored as timestamps on the account.
+      await api.updateProfile({ ...payload, onboarded: true, accept_terms: true, confirm_truth: true });
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await refresh();
+      router.replace("/(tabs)");
+    } catch (e) {
+      const words = profanityWords(e);
+      setError(words ? t("profanity_error").replace("{words}", words.join(", ")) : t("create_failed"));
+    } finally { setSaving(false); }
+  };
+
+  const saveUser = () => save({ name: name.trim(), birthdate, bio: bio.trim(), instagram: instagram.trim(), picture, account_type: "user" });
+
   const finish = async () => {
     setError("");
     if (role === "user") {
       if (!name.trim()) return setError(t("onb_name_error"));
       const age = getAge(birthdate);
       if (age === null || age < 16) return setError(t("onb_age_error"));
-      setSaving(true);
-      try {
-        await api.updateProfile({ name: name.trim(), birthdate, bio: bio.trim(), instagram: instagram.trim(), picture, account_type: "user", onboarded: true });
-        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        await refresh();
-        router.replace("/(tabs)");
-      } catch { setError(t("create_failed")); } finally { setSaving(false); }
+      if (!truth || !terms) return setError(t("onb_checks_error"));
+      setConfirmBirth(true); // the birthdate can't be changed later, so ask once more
     } else {
       if (!bizName.trim()) return setError(t("onb_biz_error"));
-      setSaving(true);
-      try {
-        await api.updateProfile({
-          name: name.trim() || bizName.trim(), account_type: "business", onboarded: true,
-          business_name: bizName.trim(), business_category: bizCat, business_address: bizAddress.trim(),
-          business_website: bizWebsite.trim(), business_instagram: bizInstagram.trim(),
-        });
-        if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        await refresh();
-        router.replace("/(tabs)");
-      } catch { setError(t("create_failed")); } finally { setSaving(false); }
+      if (!truth || !terms) return setError(t("onb_checks_error"));
+      save({
+        name: name.trim() || bizName.trim(), account_type: "business",
+        business_name: bizName.trim(), business_category: bizCat, business_address: bizAddress.trim(),
+        business_website: bizWebsite.trim(), business_instagram: bizInstagram.trim(),
+      });
     }
   };
 
@@ -160,13 +174,60 @@ export default function Onboarding() {
           </>
         )}
 
+        <View style={styles.checks}>
+          <Check testID="onb-truth" checked={truth} onToggle={() => setTruth((v) => !v)} colors={colors}>
+            <Text style={[styles.checkText, { color: colors.onSurface }]}>{t("onb_truth")}</Text>
+          </Check>
+          <Check testID="onb-terms" checked={terms} onToggle={() => setTerms((v) => !v)} colors={colors}>
+            <Text style={[styles.checkText, { color: colors.onSurface }]}>{t("onb_terms")}</Text>
+            <View style={styles.linkRow}>
+              <Text testID="onb-link-terms" onPress={() => router.push("/legal/nutzungsbedingungen")} style={[styles.link, { color: colors.brand }]}>{t("terms_title")}</Text>
+              <Text style={{ color: colors.onSurfaceTertiary }}>·</Text>
+              <Text testID="onb-link-privacy" onPress={() => router.push("/legal/datenschutz")} style={[styles.link, { color: colors.brand }]}>{t("privacy_title")}</Text>
+            </View>
+          </Check>
+        </View>
+
         {!!error && <Text style={{ color: colors.error, fontWeight: "600" }} testID="onb-error">{error}</Text>}
 
-        <Pressable testID="onb-finish" onPress={finish} disabled={saving} style={[styles.finish, { backgroundColor: colors.brand, opacity: saving ? 0.7 : 1 }]}>
+        <Pressable testID="onb-finish" onPress={finish} disabled={saving} style={[styles.finish, { backgroundColor: colors.brand, opacity: saving || !truth || !terms ? 0.6 : 1 }]}>
           {saving ? <ActivityIndicator color={colors.onBrand} /> : <Text style={[styles.finishText, { color: colors.onBrand }]}>{t("onb_finish")}</Text>}
         </Pressable>
       </KeyboardAwareScrollView>
+
+      <Modal visible={confirmBirth} transparent animationType="fade" onRequestClose={() => setConfirmBirth(false)}>
+        <View style={styles.modalBg}>
+          <View testID="onb-birth-confirm" style={[styles.modalCard, { backgroundColor: colors.surfaceSecondary }]}>
+            <View style={[styles.modalIcon, { backgroundColor: colors.brandTertiary }]}>
+              <Ionicons name="calendar" size={26} color={colors.brand} />
+            </View>
+            <Text style={[styles.modalTitle, { color: colors.onSurface }]}>{t("onb_confirm_title")}</Text>
+            <Text style={[styles.modalBody, { color: colors.onSurfaceSecondary }]}>
+              {t("onb_confirm_body").replace("{date}", formatBirthdate(birthdate, lang))}
+            </Text>
+            <View style={styles.modalActions}>
+              <Pressable testID="onb-birth-edit" onPress={() => setConfirmBirth(false)} style={[styles.modalBtn, { borderColor: colors.border, borderWidth: 1 }]}>
+                <Text style={[styles.modalBtnText, { color: colors.onSurface }]}>{t("onb_confirm_edit")}</Text>
+              </Pressable>
+              <Pressable testID="onb-birth-ok" onPress={() => { setConfirmBirth(false); saveUser(); }} style={[styles.modalBtn, { backgroundColor: colors.brand }]}>
+                <Text style={[styles.modalBtnText, { color: colors.onBrand }]}>{t("onb_confirm_ok")}</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
+  );
+}
+
+function Check({ testID, checked, onToggle, colors, children }: any) {
+  return (
+    <Pressable testID={testID} onPress={onToggle} accessibilityRole="checkbox" accessibilityState={{ checked }} style={styles.check}>
+      <View style={[styles.box, { borderColor: checked ? colors.brand : colors.borderStrong, backgroundColor: checked ? colors.brand : "transparent" }]}>
+        {checked && <Ionicons name="checkmark" size={16} color={colors.onBrand} />}
+      </View>
+      <View style={{ flex: 1, gap: 4 }}>{children}</View>
+    </Pressable>
   );
 }
 
@@ -216,4 +277,18 @@ const styles = StyleSheet.create({
   dateText: { fontSize: 15, fontWeight: "600" },
   finish: { height: 54, borderRadius: 14, alignItems: "center", justifyContent: "center", marginTop: 8 },
   finishText: { color: "#FFFFFF", fontSize: 17, fontWeight: "800" },
+  checks: { gap: 14, marginTop: 4 },
+  check: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  box: { width: 24, height: 24, borderRadius: 7, borderWidth: 2, alignItems: "center", justifyContent: "center", marginTop: 1 },
+  checkText: { fontSize: 14, lineHeight: 20 },
+  linkRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  link: { fontSize: 13, fontWeight: "700" },
+  modalBg: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center", padding: 24 },
+  modalCard: { width: "100%", maxWidth: 400, borderRadius: 20, padding: 22, alignItems: "center", gap: 12 },
+  modalIcon: { width: 52, height: 52, borderRadius: 26, alignItems: "center", justifyContent: "center" },
+  modalTitle: { fontSize: 18, fontWeight: "800", textAlign: "center" },
+  modalBody: { fontSize: 15, lineHeight: 22, textAlign: "center" },
+  modalActions: { flexDirection: "row", gap: 10, alignSelf: "stretch", marginTop: 6 },
+  modalBtn: { flex: 1, height: 48, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  modalBtnText: { fontSize: 15, fontWeight: "800" },
 });

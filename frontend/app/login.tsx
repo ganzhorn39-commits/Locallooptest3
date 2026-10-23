@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/src/auth/AuthContext";
 import { useI18n } from "@/src/i18n";
 import { storage } from "@/src/utils/storage";
+import { LEGAL_DOCS, legalText } from "@/src/legal/content";
 
 export const PENDING_ROLE_KEY = "pending_account_role";
 
@@ -101,6 +102,16 @@ export default function Login() {
                 <Text style={styles.barLink}>{t("business")}</Text>
               </Pressable>
             </View>
+            <View style={styles.legalRow}>
+              {LEGAL_DOCS.map((doc, i) => (
+                <React.Fragment key={doc}>
+                  {i > 0 && <Text style={styles.legalDot}>·</Text>}
+                  <Text testID={`login-legal-${doc}`} onPress={() => router.push(`/legal/${doc}`)} style={styles.legalLink}>
+                    {legalText(doc, lang).title}
+                  </Text>
+                </React.Fragment>
+              ))}
+            </View>
           </View>
         </BlurView>
       </View>
@@ -163,6 +174,9 @@ const styles = StyleSheet.create({
   demoText: { color: "rgba(255,255,255,0.8)", fontSize: 14, fontWeight: "600", textDecorationLine: "underline" },
   bottomBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 4 },
   barLink: { color: "rgba(255,255,255,0.75)", fontSize: 12, fontWeight: "700" },
+  legalRow: { flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 6, flexWrap: "wrap" },
+  legalLink: { color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: "600" },
+  legalDot: { color: "rgba(255,255,255,0.4)", fontSize: 11 },
   atBg: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)", justifyContent: "flex-end" },
   atCard: { borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 22, paddingBottom: 40, gap: 14, overflow: "hidden", backgroundColor: "rgba(12,14,20,0.6)", borderTopWidth: 1, borderColor: "rgba(255,255,255,0.15)" },
   atTitle: { color: "#FFFFFF", fontSize: 20, fontWeight: "800", marginBottom: 6 },

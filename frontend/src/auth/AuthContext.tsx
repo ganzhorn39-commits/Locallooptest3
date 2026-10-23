@@ -25,6 +25,9 @@ type User = {
   business_address?: string;
   business_website?: string;
   business_instagram?: string;
+  identity_verified?: boolean;
+  terms_accepted_at?: string; // Nutzungsbedingungen + Community-Richtlinien akzeptiert
+  truth_confirmed_at?: string; // "Angaben entsprechen der Wahrheit" bestätigt
 };
 type AuthState = { user: User | null; loading: boolean; loggingIn: boolean; guest: boolean };
 

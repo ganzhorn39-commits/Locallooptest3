@@ -1,15 +1,19 @@
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Platform } from "react-native";
 import { Image } from "expo-image";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
+import * as Haptics from "expo-haptics";
 import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
+import { useAuth } from "@/src/auth/AuthContext";
 import { api } from "@/src/api/client";
 import { getAge } from "@/src/utils/age";
 import { CATEGORIES } from "@/src/constants/categories";
+import ActionSheet from "@/src/components/ActionSheet";
+import ReportSheet from "@/src/components/ReportSheet";
 
 const openLink = async (url: string) => {
   try { await WebBrowser.openBrowserAsync(/^https?:\/\//i.test(url) ? url : `https://${url}`); } catch {}
@@ -21,16 +25,35 @@ export default function PublicProfile() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
+  const { user, promptLogin } = useAuth();
   const [u, setU] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
-  const [reported, setReported] = useState(false);
   const [blocked, setBlocked] = useState(false);
+  const [reporting, setReporting] = useState(false);
+  const [confirmBlock, setConfirmBlock] = useState(false);
 
   useEffect(() => {
     (async () => {
-      try { setU(await api.getUser(id)); } catch {} finally { setLoading(false); }
+      try {
+        const data = await api.getUser(id);
+        setU(data);
+        setBlocked(!!data.blocked);
+      } catch {} finally { setLoading(false); }
     })();
   }, [id]);
+
+  const isMe = !!user && user.user_id === id;
+
+  const toggleBlock = async () => {
+    try {
+      const res = await api.toggleBlock(id);
+      setBlocked(res.blocked);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    } catch {}
+  };
+
+  const onReport = () => (user ? setReporting(true) : promptLogin());
+  const onBlock = () => (!user ? promptLogin() : blocked ? toggleBlock() : setConfirmBlock(true));
 
   if (loading) return <View style={[styles.container, { backgroundColor: colors.surface }]}><ActivityIndicator style={{ marginTop: 80 }} color={colors.brand} /></View>;
 
@@ -79,17 +102,36 @@ export default function PublicProfile() {
           </Pressable>
         )}
 
-        <View style={styles.actions}>
-          <Pressable testID="report-user" onPress={() => setReported(true)} style={[styles.actionBtn, { borderColor: colors.border }]}>
-            <Ionicons name="flag-outline" size={18} color={colors.warning} />
-            <Text style={[styles.actionText, { color: colors.onSurface }]}>{reported ? t("reported") : t("report")}</Text>
-          </Pressable>
-          <Pressable testID="block-user" onPress={() => setBlocked((b) => !b)} style={[styles.actionBtn, { borderColor: colors.border }]}>
-            <Ionicons name="ban-outline" size={18} color={colors.error} />
-            <Text style={[styles.actionText, { color: colors.onSurface }]}>{blocked ? t("blocked") : t("block")}</Text>
-          </Pressable>
-        </View>
+        {blocked && (
+          <View testID="user-blocked-note" style={[styles.blockedNote, { borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}>
+            <Ionicons name="ban" size={16} color={colors.error} />
+            <Text style={[styles.blockedText, { color: colors.onSurfaceSecondary }]}>{t("blocked_note")}</Text>
+          </View>
+        )}
+
+        {!isMe && (
+          <View style={styles.actions}>
+            <Pressable testID="report-user" onPress={onReport} style={[styles.actionBtn, { borderColor: colors.border }]}>
+              <Ionicons name="flag-outline" size={18} color={colors.warning} />
+              <Text style={[styles.actionText, { color: colors.onSurface }]}>{t("report")}</Text>
+            </Pressable>
+            <Pressable testID="block-user" onPress={onBlock} style={[styles.actionBtn, { borderColor: blocked ? colors.error : colors.border }]}>
+              <Ionicons name={blocked ? "lock-open-outline" : "ban-outline"} size={18} color={colors.error} />
+              <Text style={[styles.actionText, { color: colors.onSurface }]}>{blocked ? t("unblock_user") : t("block_user")}</Text>
+            </Pressable>
+          </View>
+        )}
       </View>
+
+      <ActionSheet
+        testID="block-confirm"
+        visible={confirmBlock}
+        title={t("block_confirm_title").replace("{name}", name || t("guest"))}
+        message={t("block_confirm_body")}
+        onClose={() => setConfirmBlock(false)}
+        actions={[{ key: "block-confirm", label: t("block_user"), icon: "ban", danger: true, onPress: toggleBlock }]}
+      />
+      {reporting && <ReportSheet target={{ type: "user", id, title: `${t("report_user")}: ${name || ""}` }} onClose={() => setReporting(false)} />}
     </View>
   );
 }
@@ -109,6 +151,8 @@ const styles = StyleSheet.create({
   infoRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   infoText: { fontSize: 14, fontWeight: "600" },
   actions: { flexDirection: "row", gap: 12, marginTop: 20 },
+  blockedNote: { flexDirection: "row", alignItems: "center", gap: 8, padding: 12, borderRadius: 12, borderWidth: 1, marginTop: 8 },
+  blockedText: { fontSize: 13, flexShrink: 1, lineHeight: 18 },
   actionBtn: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 18, height: 46, borderRadius: 12, borderWidth: 1 },
   actionText: { fontSize: 14, fontWeight: "700" },
 });

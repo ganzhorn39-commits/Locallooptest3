@@ -79,6 +79,7 @@ function AuthGate() {
     if (loading) return;
     const inAuth = segments[0] === "login";
     const inOnboarding = segments[0] === "onboarding";
+    if (segments[0] === "legal") return; // Impressum & Co. must stay reachable before signing in / during onboarding
     if (!user && !guest && !inAuth) router.replace("/login");
     else if (user && !user.onboarded && !inOnboarding) router.replace("/onboarding");
     else if (user && user.onboarded && (inAuth || inOnboarding)) router.replace("/(tabs)");
@@ -100,6 +101,7 @@ function AuthGate() {
         <Stack.Screen name="dashboard" />
         <Stack.Screen name="edit-event/[id]" options={{ animation: "slide_from_bottom" }} />
         <Stack.Screen name="deals" />
+        <Stack.Screen name="legal/[doc]" />
         <Stack.Screen name="scan-deal" options={{ animation: "slide_from_bottom" }} />
       </Stack>
       {showIntro && <SplashIntro onDone={() => setShowIntro(false)} />}

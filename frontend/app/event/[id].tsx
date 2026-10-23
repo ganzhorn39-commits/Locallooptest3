@@ -12,11 +12,13 @@ import { api, EventItem } from "@/src/api/client";
 import { categoryMeta } from "@/src/constants/categories";
 import { countdown } from "@/src/utils/filters";
 import DealCard from "@/src/components/DealCard";
+import ActionSheet from "@/src/components/ActionSheet";
+import ReportSheet from "@/src/components/ReportSheet";
 
 export default function EventDetail() {
   const { colors } = useTheme();
   const { t } = useI18n();
-  const { user } = useAuth();
+  const { user, promptLogin } = useAuth();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -25,6 +27,9 @@ export default function EventDetail() {
   const [people, setPeople] = useState<{ count: number; participants: any[] } | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [showMore, setShowMore] = useState(false);
+  const [reporting, setReporting] = useState(false);
+  const [confirmBlock, setConfirmBlock] = useState(false);
 
   // Reload on focus so edits made by the host show up when coming back from the edit form.
   const load = useCallback(async () => {
@@ -44,6 +49,14 @@ export default function EventDetail() {
     try {
       const url = e.website || e.tickets_url || "";
       await Share.share({ message: `${e.title} @ ${e.venue_name || e.host_name || e.address}\n${url}`.trim() });
+    } catch {}
+  };
+
+  const blockHost = async () => {
+    try {
+      await api.toggleBlock(e.created_by);
+      if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      router.back();
     } catch {}
   };
 
@@ -72,6 +85,11 @@ export default function EventDetail() {
             {canEdit && (
               <Pressable testID="event-detail-edit" accessibilityLabel={t("edit_event")} onPress={() => router.push(`/edit-event/${id}`)} style={styles.roundBtnStatic}>
                 <Ionicons name="create-outline" size={22} color="#FFFFFF" />
+              </Pressable>
+            )}
+            {!isHost && (
+              <Pressable testID="event-detail-more" accessibilityLabel={t("more_options")} onPress={() => (user ? setShowMore(true) : promptLogin())} style={styles.roundBtnStatic}>
+                <Ionicons name="ellipsis-horizontal" size={21} color="#FFFFFF" />
               </Pressable>
             )}
           </View>
@@ -146,6 +164,26 @@ export default function EventDetail() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <ActionSheet
+        testID="event-more"
+        visible={showMore}
+        title={e.title}
+        onClose={() => setShowMore(false)}
+        actions={[
+          { key: "report-event", label: t("report_event"), icon: "flag-outline", onPress: () => setReporting(true) },
+          { key: "block-host", label: t("block_host"), icon: "ban-outline", danger: true, onPress: () => setConfirmBlock(true) },
+        ]}
+      />
+      <ActionSheet
+        testID="block-confirm"
+        visible={confirmBlock}
+        title={t("block_confirm_title").replace("{name}", e.host_name || t("guest"))}
+        message={t("block_confirm_body")}
+        onClose={() => setConfirmBlock(false)}
+        actions={[{ key: "block-confirm", label: t("block_user"), icon: "ban", danger: true, onPress: blockHost }]}
+      />
+      {reporting && <ReportSheet target={{ type: "event", id: e.id }} onClose={() => setReporting(false)} />}
     </View>
   );
 }

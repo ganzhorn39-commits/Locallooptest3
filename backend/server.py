@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 
+from moderation import censor_text, find_bad_words
+
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -139,6 +141,32 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
+
+
+async def get_optional_user(authorization: Optional[str] = Header(None)):
+    """Like get_current_user, but guests (no/invalid token) get None instead of a 401."""
+    if not authorization:
+        return None
+    try:
+        return await get_current_user(authorization)
+    except HTTPException:
+        return None
+
+
+async def blocked_ids(user: Optional[dict]) -> set:
+    """Users this person has blocked: their messages, events and avatars are hidden for them."""
+    if not user:
+        return set()
+    rows = await db.blocks.find({"user_id": user["user_id"]}, {"_id": 0, "blocked_id": 1}).to_list(None)
+    return {r["blocked_id"] for r in rows}
+
+
+def reject_bad_words(fields: dict):
+    """400 if a text others will see contains blacklisted words (see moderation.py)."""
+    for field, value in fields.items():
+        words = find_bad_words(value or "") if isinstance(value, str) else []
+        if words:
+            raise HTTPException(status_code=400, detail={"code": "profanity", "field": field, "words": words})
 
 
 @api_router.post("/auth/session")
@@ -283,11 +311,14 @@ async def attach_hosts(docs: List[dict]) -> List[dict]:
 
 
 @api_router.get("/events")
-async def list_events(category: Optional[str] = None):
+async def list_events(category: Optional[str] = None, user=Depends(get_optional_user)):
     # Cancelled events leave the map and the lists (their page and chat stay reachable by link).
     query: dict = {"status": {"$ne": "cancelled"}}
     if category and category != "all":
         query["category"] = category
+    hidden_hosts = await blocked_ids(user)
+    if hidden_hosts:
+        query["created_by"] = {"$nin": list(hidden_hosts)}
     docs = await db.events.find(query, {"_id": 0}).to_list(1000)
     ids = [d["id"] for d in docs]
     # "Trending" uses real activity only: check-ins + saves.
@@ -327,6 +358,7 @@ async def check_offer(user: dict, title: str, limit: int, event_id: Optional[str
 @api_router.post("/events")
 async def create_event(payload: EventCreate, user=Depends(get_current_user)):
     data = payload.dict()
+    reject_bad_words({k: data.get(k) for k in ("title", "description", "offer_title", "venue_name")})
     data["offer_title"], data["offer_limit"] = await check_offer(user, data["offer_title"], data["offer_limit"])
     event = Event(**data, created_by=user["user_id"])
     await db.events.insert_one(event.dict())
@@ -367,6 +399,7 @@ async def update_event(event_id: str, payload: EventUpdate, user=Depends(get_cur
     if ev.get("status") == "cancelled":
         raise HTTPException(status_code=409, detail="Event cancelled")
     updates = {k: v for k, v in payload.dict().items() if v is not None}
+    reject_bad_words({k: updates.get(k) for k in ("title", "description", "offer_title", "venue_name")})
     if "title" in updates:
         updates["title"] = updates["title"].strip()
         if not updates["title"]:
@@ -609,10 +642,13 @@ class ProfileUpdate(BaseModel):
     business_instagram: Optional[str] = None
     identity_verified: Optional[bool] = None
     selfie: Optional[str] = None
+    # Registration confirmations: stored as timestamps (terms_accepted_at / truth_confirmed_at), never un-set.
+    accept_terms: Optional[bool] = None  # Nutzungsbedingungen + Community-Richtlinien
+    confirm_truth: Optional[bool] = None  # "Ich bestätige, dass meine Angaben der Wahrheit entsprechen"
 
 
 @api_router.get("/users/{user_id}")
-async def get_public_user(user_id: str):
+async def get_public_user(user_id: str, viewer=Depends(get_optional_user)):
     u = await db.users.find_one(
         {"user_id": user_id},
         {"_id": 0, "user_id": 1, "name": 1, "picture": 1, "bio": 1, "instagram": 1,
@@ -621,6 +657,7 @@ async def get_public_user(user_id: str):
     )
     if not u:
         raise HTTPException(status_code=404, detail="User not found")
+    u["blocked"] = user_id in await blocked_ids(viewer)
     return u
 
 
@@ -647,18 +684,29 @@ async def delete_profile(user=Depends(get_current_user)):
         else:
             await db.deals.delete_one({"id": d["id"]})
             await db.events.update_one({"id": d["event_id"]}, {"$inc": {"offer_claimed": -1}})
+    await db.blocks.delete_many({"$or": [{"user_id": uid}, {"blocked_id": uid}]})
+    await db.reports.delete_many({"reporter_id": uid})  # reports *about* this user stay for moderation
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
     return {"ok": True}
 
 
-
 @api_router.patch("/profile")
 async def update_profile(payload: ProfileUpdate, user=Depends(get_current_user)):
     updates = {k: v for k, v in payload.dict().items() if v is not None}
+    accept_terms = updates.pop("accept_terms", False)
+    confirm_truth = updates.pop("confirm_truth", False)
     for k in ("business_name", "business_address", "business_website", "business_instagram"):
         if k in updates:
             updates[k] = updates[k].strip()
+    reject_bad_words({k: updates.get(k) for k in ("name", "bio", "business_name")})
+    # The birthdate is fixed once registration is complete (age rules depend on it).
+    if "birthdate" in updates and user.get("onboarded") and user.get("birthdate") and updates["birthdate"] != user["birthdate"]:
+        raise HTTPException(status_code=409, detail="Birthdate can't be changed")
+    if accept_terms and not user.get("terms_accepted_at"):
+        updates["terms_accepted_at"] = now_utc().isoformat()
+    if confirm_truth and not user.get("truth_confirmed_at"):
+        updates["truth_confirmed_at"] = now_utc().isoformat()
     # Business accounts with a completed business profile are auto-verified (demo).
     merged = {**user, **updates}
     if merged.get("account_type") == "business" and "business_name" in updates and not updates["business_name"]:
@@ -686,7 +734,10 @@ async def participants(event_id: str, user=Depends(get_current_user)):
     docs = await db.checkins.find({"event_id": event_id}).to_list(500)
     users = []
     requester = user["user_id"]
+    hidden = await blocked_ids(user)
     for d in docs:
+        if d["user_id"] in hidden:  # still counted, just not shown to the person who blocked them
+            continue
         vis = d.get("visibility", "public")
         visible = vis == "public" or d["user_id"] == requester
         if visible:
@@ -737,10 +788,11 @@ async def get_reviews(event_id: str):
 async def post_review(event_id: str, payload: ReviewCreate, user=Depends(get_current_user)):
     await require_attending(event_id, user)
     rating = max(1, min(5, int(payload.rating)))
+    comment, _ = censor_text(payload.comment.strip()[:1000])
     review = {
         "id": str(uuid.uuid4()), "event_id": event_id, "user_id": user["user_id"],
         "user_name": user.get("name") or "Guest", "user_picture": user.get("picture") or "",
-        "rating": rating, "comment": payload.comment.strip(), "created_at": now_utc().isoformat(),
+        "rating": rating, "comment": comment, "created_at": now_utc().isoformat(),
     }
     await db.reviews.update_one(
         {"event_id": event_id, "user_id": user["user_id"]},
@@ -759,7 +811,14 @@ class MessageCreate(BaseModel):
 async def get_messages(event_id: str, user=Depends(get_current_user)):
     await require_attending(event_id, user)
     docs = await db.messages.find({"event_id": event_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
-    return docs
+    hidden = await blocked_ids(user)
+    uid = user["user_id"]
+    # Messages of blocked people disappear for the blocker; messages hidden after several reports
+    # disappear for everyone except their author.
+    return [m for m in docs if m.get("user_id") not in hidden and (not m.get("hidden") or m.get("user_id") == uid)]
+
+
+MESSAGE_MAX_LEN = 2000
 
 
 @api_router.post("/events/{event_id}/messages")
@@ -768,10 +827,13 @@ async def post_message(event_id: str, payload: MessageCreate, user=Depends(get_c
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Empty message")
+    if len(text) > MESSAGE_MAX_LEN:
+        raise HTTPException(status_code=400, detail=f"Message too long (max {MESSAGE_MAX_LEN})")
+    text, censored = censor_text(text)
     msg = {
         "id": str(uuid.uuid4()), "event_id": event_id, "user_id": user["user_id"],
         "user_name": user.get("name") or "Guest", "user_picture": user.get("picture") or "",
-        "text": text, "created_at": now_utc().isoformat(),
+        "text": text, "censored": censored, "created_at": now_utc().isoformat(),
     }
     await db.messages.insert_one(dict(msg))
     # Notify other attendees (non-blocking)
@@ -786,6 +848,88 @@ async def post_message(event_id: str, payload: MessageCreate, user=Depends(get_c
     except Exception as e:
         logger.warning(f"chat push failed (non-blocking): {e}")
     return msg
+
+
+# ----------------------------- Reports & blocks (moderation) -----------------------------
+REPORT_TYPES = {"user", "event", "message"}
+REPORT_REASONS = {"spam", "harassment", "hate", "sexual", "violence", "fake", "other"}
+AUTO_HIDE_REPORTS = 3  # a chat message reported by this many different people is hidden for everyone
+
+
+class ReportBody(BaseModel):
+    target_type: str  # user | event | message
+    target_id: str
+    reason: str
+    note: str = ""
+
+
+@api_router.post("/reports")
+async def create_report(body: ReportBody, user=Depends(get_current_user)):
+    if body.target_type not in REPORT_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid target_type")
+    if body.reason not in REPORT_REASONS:
+        raise HTTPException(status_code=400, detail="Invalid reason")
+    uid = user["user_id"]
+    if body.target_type == "user":
+        target = await db.users.find_one({"user_id": body.target_id}, {"_id": 0, "user_id": 1, "name": 1})
+        owner, snapshot, event_id = body.target_id, (target or {}).get("name", ""), None
+    elif body.target_type == "event":
+        target = await db.events.find_one({"id": body.target_id}, {"_id": 0, "id": 1, "title": 1, "created_by": 1})
+        owner, snapshot, event_id = (target or {}).get("created_by"), (target or {}).get("title", ""), body.target_id
+    else:
+        target = await db.messages.find_one({"id": body.target_id}, {"_id": 0})
+        owner, snapshot, event_id = (target or {}).get("user_id"), (target or {}).get("text", ""), (target or {}).get("event_id")
+    if not target:
+        raise HTTPException(status_code=404, detail="Not found")
+    if owner == uid:
+        raise HTTPException(status_code=400, detail="You can't report yourself")
+    await db.reports.update_one(
+        {"reporter_id": uid, "target_type": body.target_type, "target_id": body.target_id},
+        {"$set": {"reason": body.reason, "note": body.note.strip()[:500], "target_owner_id": owner,
+                  "event_id": event_id, "snapshot": (snapshot or "")[:500], "updated_at": now_utc().isoformat()},
+         "$setOnInsert": {"id": str(uuid.uuid4()), "status": "open", "created_at": now_utc().isoformat()}},
+        upsert=True,
+    )
+    if body.target_type == "message":
+        reporters = await db.reports.count_documents({"target_type": "message", "target_id": body.target_id})
+        if reporters >= AUTO_HIDE_REPORTS:
+            await db.messages.update_one({"id": body.target_id}, {"$set": {"hidden": True}})
+    return {"ok": True}
+
+
+@api_router.post("/users/{user_id}/block")
+async def toggle_block(user_id: str, user=Depends(get_current_user)):
+    uid = user["user_id"]
+    if user_id == uid:
+        raise HTTPException(status_code=400, detail="You can't block yourself")
+    if not await db.users.find_one({"user_id": user_id}, {"_id": 0, "user_id": 1}):
+        raise HTTPException(status_code=404, detail="User not found")
+    res = await db.blocks.delete_one({"user_id": uid, "blocked_id": user_id})
+    if res.deleted_count:
+        return {"blocked": False}
+    try:
+        await db.blocks.insert_one({"user_id": uid, "blocked_id": user_id, "at": now_utc().isoformat()})
+    except DuplicateKeyError:
+        pass
+    return {"blocked": True}
+
+
+@api_router.get("/my/blocks")
+async def my_blocks(user=Depends(get_current_user)):
+    ids = list(await blocked_ids(user))
+    return await db.users.find(
+        {"user_id": {"$in": ids}},
+        {"_id": 0, "user_id": 1, "name": 1, "picture": 1, "account_type": 1, "business_name": 1},
+    ).to_list(None)
+
+
+@api_router.get("/admin/reports")
+async def admin_reports(status: str = "open", user=Depends(get_current_user)):
+    """Moderation queue for the addresses listed in ADMIN_EMAILS (comma separated)."""
+    admins = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
+    if (user.get("email") or "").lower() not in admins:
+        raise HTTPException(status_code=403, detail="Admins only")
+    return await db.reports.find({"status": status}, {"_id": 0}).sort("created_at", -1).to_list(500)
 
 
 # ----------------------------- Crews -----------------------------
@@ -1401,6 +1545,8 @@ async def seed_and_index():
     await db.deals.create_index("code", unique=True)
     await db.deals.create_index([("event_id", 1), ("user_id", 1)], unique=True)
     await db.deals.create_index("user_id")
+    await db.blocks.create_index([("user_id", 1), ("blocked_id", 1)], unique=True)
+    await db.reports.create_index([("reporter_id", 1), ("target_type", 1), ("target_id", 1)], unique=True)
     SEED_VERSION = 2
     meta = await db.meta.find_one({"key": "seed_version"})
     current_version = (meta or {}).get("value", 0)

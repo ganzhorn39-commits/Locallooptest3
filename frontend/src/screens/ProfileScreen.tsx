@@ -9,7 +9,7 @@ import * as Haptics from "expo-haptics";
 import { useTheme } from "@/src/theme/theme";
 import { useAuth } from "@/src/auth/AuthContext";
 import { useI18n } from "@/src/i18n";
-import { api, Dashboard } from "@/src/api/client";
+import { api, Dashboard, profanityWords } from "@/src/api/client";
 import { getAge } from "@/src/utils/age";
 import { pickImage } from "@/src/utils/pickImage";
 import CategoryWheel from "@/src/components/CategoryWheel";
@@ -69,11 +69,14 @@ export default function ProfileScreen({ showBack }: { showBack?: boolean }) {
       await refresh();
       setSaved(true);
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch {
-      setError(t("save_failed"));
+    } catch (e) {
+      const words = profanityWords(e);
+      setError(words ? t("profanity_error").replace("{words}", words.join(", ")) : t("save_failed"));
     } finally { setSaving(false); }
   };
 
+  const birth = user?.birthdate ? user.birthdate.split("-").map(Number) : null;
+  const birthText = birth ? new Date(birth[0], birth[1] - 1, birth[2]).toLocaleDateString(undefined, { day: "2-digit", month: "2-digit", year: "numeric" }) : "";
   const pending = hosting?.pending_requests || 0;
   const showDashboard = isBiz || (hosting?.events || 0) > 0;
   const count = (key: string, n: number) => t(`${key}_${n === 1 ? "one" : "other"}`).replace("{n}", String(n));
@@ -123,6 +126,12 @@ export default function ProfileScreen({ showBack }: { showBack?: boolean }) {
               </View>
             );
           })()}
+          {!isBiz && !!birthText && (
+            <View testID="birthdate-locked" style={[styles.birthRow, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+              <Ionicons name="lock-closed" size={13} color={colors.onSurfaceTertiary} />
+              <Text style={[styles.birthText, { color: colors.onSurfaceTertiary }]}>{t("birthdate_locked")}: {birthText}</Text>
+            </View>
+          )}
         </View>
 
         {showDashboard && (
@@ -212,6 +221,8 @@ const styles = StyleSheet.create({
   verifiedText: { fontSize: 12, fontWeight: "700" },
   label: { fontSize: 13, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5, marginTop: 6 },
   sectionTitle: { fontSize: 17, fontWeight: "800", marginTop: 14 },
+  birthRow: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1 },
+  birthText: { fontSize: 12, fontWeight: "600" },
   errorText: { fontSize: 14, fontWeight: "600" },
   dashCard: { flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 16, borderWidth: 1.5, marginBottom: 4 },
   dashIcon: { width: 42, height: 42, borderRadius: 12, alignItems: "center", justifyContent: "center" },

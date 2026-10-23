@@ -13,6 +13,15 @@ async function authHeaders(): Promise<Record<string, string>> {
 // Errors keep the "<status>: <body>" message; `status` and the parsed `detail` are attached for callers that need them.
 export type ApiError = Error & { status?: number; detail?: any };
 
+export type ReportTarget = "user" | "event" | "message";
+export type ReportReason = "spam" | "harassment" | "hate" | "sexual" | "violence" | "fake" | "other";
+
+// The backend rejects texts with blacklisted words: { code: "profanity", field, words }.
+export function profanityWords(e: unknown): string[] | null {
+  const d = (e as ApiError)?.detail;
+  return d && typeof d === "object" && d.code === "profanity" ? (d.words as string[]) : null;
+}
+
 async function req(path: string, options: RequestInit = {}) {
   const headers = { ...(await authHeaders()), ...(options.headers || {}) };
   const res = await fetch(`${BASE}/api${path}`, { ...options, headers });
@@ -214,6 +223,13 @@ export const api = {
   // Public profile + account
   getUser: (id: string): Promise<any> => req(`/users/${id}`),
   deleteAccount: () => req(`/profile`, { method: "DELETE" }),
+
+  // Moderation
+  report: (target_type: ReportTarget, target_id: string, reason: ReportReason, note = "") =>
+    req(`/reports`, { method: "POST", body: JSON.stringify({ target_type, target_id, reason, note }) }),
+  toggleBlock: (userId: string): Promise<{ blocked: boolean }> => req(`/users/${userId}/block`, { method: "POST" }),
+  myBlocks: (): Promise<{ user_id: string; name?: string; picture?: string; account_type?: string; business_name?: string }[]> =>
+    req(`/my/blocks`),
 
   // Chat
   getMessages: (id: string): Promise<any[]> => req(`/events/${id}/messages`),
