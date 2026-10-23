@@ -12,7 +12,8 @@ import * as Linking from "expo-linking";
 import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { ThemeProvider, useTheme } from "@/src/theme/theme";
 import { AuthProvider, useAuth } from "@/src/auth/AuthContext";
-import { I18nProvider } from "@/src/i18n";
+import { I18nProvider, useI18n } from "@/src/i18n";
+import { api } from "@/src/api/client";
 import { LocationPermissionProvider } from "@/src/location/LocationPermission";
 import { registerForPush } from "@/src/push";
 import SplashIntro from "@/src/components/SplashIntro";
@@ -74,6 +75,14 @@ function AuthGate() {
     if (user) registerForPush(user.user_id);
   }, [user]);
 
+  // Push texts are written in the account's language: keep it in sync with the app language.
+  const { lang } = useI18n();
+  const userId = user?.user_id;
+  const userLang = user?.lang;
+  useEffect(() => {
+    if (userId && userLang !== lang) api.updateProfile({ lang }).catch(() => {});
+  }, [userId, userLang, lang]);
+
   // Auth routing
   useEffect(() => {
     if (loading) return;
@@ -102,6 +111,7 @@ function AuthGate() {
         <Stack.Screen name="edit-event/[id]" options={{ animation: "slide_from_bottom" }} />
         <Stack.Screen name="deals" />
         <Stack.Screen name="legal/[doc]" />
+        <Stack.Screen name="notifications" />
         <Stack.Screen name="scan-deal" options={{ animation: "slide_from_bottom" }} />
       </Stack>
       {showIntro && <SplashIntro onDone={() => setShowIntro(false)} />}

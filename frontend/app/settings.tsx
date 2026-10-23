@@ -16,11 +16,13 @@ type BlockedUser = { user_id: string; name?: string; picture?: string; account_t
 export default function Settings() {
   const { colors, theme, setTheme } = useTheme();
   const { lang, setLang, t } = useI18n();
-  const { logout, user } = useAuth();  const insets = useSafeAreaInsets();
+  const { logout, user, refresh } = useAuth();
+  const insets = useSafeAreaInsets();
   const router = useRouter();
 
-  const [notifEvents, setNotifEvents] = useState(true);
-  const [notifMessages, setNotifMessages] = useState(true);
+  // Push switches live on the account (the server decides whom to push), not only on this device.
+  const [notifEvents, setNotifEvents] = useState(user?.push_events !== false);
+  const [notifMessages, setNotifMessages] = useState(user?.push_messages !== false);
   const [locationOn, setLocationOn] = useState(true);
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -44,13 +46,15 @@ export default function Settings() {
 
   useEffect(() => {
     (async () => {
-      setNotifEvents((await storage.getItem<boolean>("ll_notif_events", true)) ?? true);
-      setNotifMessages((await storage.getItem<boolean>("ll_notif_messages", true)) ?? true);
       setLocationOn((await storage.getItem<boolean>("ll_location", true)) ?? true);
     })();
   }, []);
 
   const setPref = (key: string, v: boolean, setter: (b: boolean) => void) => { setter(v); storage.setItem(key, v); };
+  const setPush = (field: "push_events" | "push_messages", v: boolean, setter: (b: boolean) => void) => {
+    setter(v);
+    api.updateProfile({ [field]: v }).then(() => refresh()).catch(() => setter(!v));
+  };
 
   return (
     <View style={[styles.container, { backgroundColor: colors.surface }]} testID="settings-screen">
@@ -97,10 +101,10 @@ export default function Settings() {
         {/* Notifications */}
         <Section title={t("notifications")} colors={colors}>
           <Row label={t("notif_events")} colors={colors}>
-            <Switch testID="toggle-notif-events" value={notifEvents} onValueChange={(v) => setPref("ll_notif_events", v, setNotifEvents)} trackColor={{ true: colors.brand, false: colors.borderStrong }} />
+            <Switch testID="toggle-notif-events" value={notifEvents} onValueChange={(v) => setPush("push_events", v, setNotifEvents)} trackColor={{ true: colors.brand, false: colors.borderStrong }} />
           </Row>
           <Row label={t("notif_messages")} colors={colors}>
-            <Switch testID="toggle-notif-messages" value={notifMessages} onValueChange={(v) => setPref("ll_notif_messages", v, setNotifMessages)} trackColor={{ true: colors.brand, false: colors.borderStrong }} />
+            <Switch testID="toggle-notif-messages" value={notifMessages} onValueChange={(v) => setPush("push_messages", v, setNotifMessages)} trackColor={{ true: colors.brand, false: colors.borderStrong }} />
           </Row>
         </Section>
 

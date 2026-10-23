@@ -49,6 +49,100 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
+# ----------------------------- In-app notifications (+ push) -----------------------------
+# Every push also lands in the notification center (bell). The app renders the texts itself from
+# `type` + `params`; push texts are built here in the recipient's language (users.lang, default en).
+NOTIF_TEXTS = {
+    "join_request": {"de": ("Neue Beitrittsanfrage 🙋", "{user_name} möchte zu „{event_title}“"),
+                     "en": ("New join request 🙋", "{user_name} wants to join \"{event_title}\"")},
+    "request_approved": {"de": ("Anfrage angenommen ✅", "Du bist dabei: „{event_title}“"),
+                         "en": ("Request approved ✅", "You're in for \"{event_title}\"")},
+    "request_rejected": {"de": ("Anfrage abgelehnt", "Deine Anfrage für „{event_title}“ wurde abgelehnt."),
+                         "en": ("Request declined", "Your request for \"{event_title}\" was declined.")},
+    "event_cancelled": {"de": ("Event abgesagt ❌", "„{event_title}“ wurde vom Veranstalter abgesagt."),
+                        "en": ("Event cancelled ❌", "\"{event_title}\" has been cancelled by the host.")},
+    "event_updated": {"de": ("Event geändert ✏️", "„{event_title}“ hat eine neue {what_de}."),
+                      "en": ("Event updated ✏️", "\"{event_title}\" has a new {what_en}.")},
+    "chat": {"de": ("{user_name} · {event_title}", "{text}"), "en": ("{user_name} · {event_title}", "{text}")},
+}
+WHAT_TEXT = {"time": ("Uhrzeit", "time"), "place": ("Adresse", "place"), "time_place": ("Zeit und Adresse", "time and place")}
+REMINDER_WINDOW = timedelta(hours=24)
+
+
+def _fmt(template: str, params: dict) -> str:
+    try:
+        return template.format(**params)
+    except (KeyError, IndexError, ValueError):
+        return template
+
+
+async def notify(recipients, ntype: str, params: dict, action_url: str, event_id: Optional[str] = None,
+                 actor_id: Optional[str] = None, push: bool = True):
+    """Store an in-app notification for each recipient and send a push (non-blocking on push errors)."""
+    recipients = [r for r in dict.fromkeys(recipients) if r and r != "system" and r != actor_id]
+    if actor_id and recipients:  # people who blocked the actor don't hear from them
+        blockers = await db.blocks.find({"blocked_id": actor_id, "user_id": {"$in": recipients}}, {"_id": 0, "user_id": 1}).to_list(None)
+        blocked_by = {b["user_id"] for b in blockers}
+        recipients = [r for r in recipients if r not in blocked_by]
+    if not recipients:
+        return
+    now = now_utc().isoformat()
+    if ntype == "chat":
+        # One unread entry per chat: newer messages update it and count up.
+        for r in recipients:
+            await db.notifications.update_one(
+                {"user_id": r, "type": "chat", "event_id": event_id, "read_at": None},
+                {"$set": {"params": params, "action_url": action_url, "created_at": now},
+                 "$inc": {"count": 1}, "$setOnInsert": {"id": str(uuid.uuid4())}},
+                upsert=True,
+            )
+    else:
+        await db.notifications.insert_many([
+            {"id": str(uuid.uuid4()), "user_id": r, "type": ntype, "params": params, "action_url": action_url,
+             "event_id": event_id, "count": 1, "created_at": now, "read_at": None}
+            for r in recipients
+        ])
+    if not push or ntype not in NOTIF_TEXTS:
+        return
+    prefs = await db.users.find({"user_id": {"$in": recipients}}, {"_id": 0, "user_id": 1, "lang": 1, "push_events": 1, "push_messages": 1}).to_list(None)
+    pref_key = "push_messages" if ntype == "chat" else "push_events"
+    by_lang: dict = {"de": [], "en": []}
+    for u in prefs:
+        if u.get(pref_key, True) is not False:
+            by_lang["de" if u.get("lang") == "de" else "en"].append(u["user_id"])
+    for lang, ids in by_lang.items():
+        title, body = NOTIF_TEXTS[ntype][lang]
+        for i in range(0, len(ids), 100):  # the relay takes at most 100 recipients per call
+            try:
+                await send_push(ids[i:i + 100], {"title": _fmt(title, params), "message": _fmt(body, params), "action_url": action_url})
+            except Exception as e:
+                logger.warning(f"{ntype} push failed (non-blocking): {e}")
+
+
+async def ensure_reminders(user: dict):
+    """Create (once) a reminder for events the user is going to or saved that start within 24h.
+    Generated when the user looks at notifications, so no background scheduler is needed."""
+    uid = user["user_id"]
+    ids = {c["event_id"] for c in await db.checkins.find({"user_id": uid}, {"_id": 0, "event_id": 1}).to_list(500)}
+    ids |= {s["event_id"] for s in await db.saves.find({"user_id": uid}, {"_id": 0, "event_id": 1}).to_list(500)}
+    if not ids:
+        return
+    now = now_utc()
+    for ev in await db.events.find({"id": {"$in": list(ids)}, "status": {"$ne": "cancelled"}}, {"_id": 0}).to_list(500):
+        start = parse_iso(compute_next_occurrence(ev))
+        if not start or not (now < start <= now + REMINDER_WINDOW):
+            continue
+        key = f"reminder:{ev['id']}:{start.isoformat()}"
+        await db.notifications.update_one(
+            {"user_id": uid, "dedupe_key": key},
+            {"$setOnInsert": {"id": str(uuid.uuid4()), "user_id": uid, "type": "reminder", "dedupe_key": key,
+                              "params": {"event_title": ev.get("title", ""), "start_time": start.isoformat()},
+                              "action_url": f"/event/{ev['id']}", "event_id": ev["id"], "count": 1,
+                              "created_at": now.isoformat(), "read_at": None}},
+            upsert=True,
+        )
+
+
 # ----------------------------- Models -----------------------------
 def now_utc():
     return datetime.now(timezone.utc)
@@ -436,22 +530,22 @@ async def update_event(event_id: str, payload: EventUpdate, user=Depends(get_cur
         or abs(float(updated.get("longitude", 0)) - float(ev.get("longitude", 0))) > 1e-4
     )
     if time_changed or place_changed:
-        what = "time and place" if time_changed and place_changed else ("time" if time_changed else "place")
+        what_key = "time_place" if time_changed and place_changed else ("time" if time_changed else "place")
+        what = {"time_place": "time and place", "time": "time", "place": "place"}[what_key]
         try:
             await db.messages.insert_one({
                 "id": str(uuid.uuid4()), "event_id": event_id, "user_id": "system",
-                "user_name": "LocalLoop", "user_picture": "", "system": True,
+                "user_name": "LocalLoop", "user_picture": "", "system": True, "system_key": f"updated_{what_key}",
                 "text": f"✏️ The host changed the {what} of this event. Check the details before you go.",
                 "created_at": now_utc().isoformat(),
             })
             att = await db.checkins.find({"event_id": event_id}).to_list(500)
             reqs = await db.join_requests.find({"event_id": event_id, "status": "pending"}).to_list(500)
-            recipients = list({*(a["user_id"] for a in att), *(r["user_id"] for r in reqs)} - {user["user_id"]})
-            if recipients:
-                await send_push(
-                    recipients=recipients,
-                    data={"title": "Event updated ✏️", "message": f"\"{updated['title']}\" has a new {what}.", "action_url": f"/event/{event_id}"},
-                )
+            await notify(
+                [a["user_id"] for a in att] + [r["user_id"] for r in reqs], "event_updated",
+                {"event_title": updated["title"], "what": what_key, "what_de": WHAT_TEXT[what_key][0], "what_en": WHAT_TEXT[what_key][1]},
+                f"/event/{event_id}", event_id=event_id, actor_id=user["user_id"],
+            )
         except Exception as e:
             logger.warning(f"update notify failed (non-blocking): {e}")
     return with_live_count(updated)
@@ -501,12 +595,11 @@ async def checkin(event_id: str, body: CheckinBody = CheckinBody(), user=Depends
             )
             is_pending = True
             try:
-                await send_push(
-                    recipients=[doc.get("created_by")],
-                    data={"title": "New join request 🙋", "message": f"{user.get('name') or 'Someone'} wants to join \"{doc['title']}\"", "action_url": "/dashboard"},
-                )
+                await notify([doc.get("created_by")], "join_request",
+                             {"user_name": user.get("name") or "Someone", "event_title": doc["title"]},
+                             "/dashboard", event_id=event_id, actor_id=uid)
             except Exception as e:
-                logger.warning(f"request push failed (non-blocking): {e}")
+                logger.warning(f"request notify failed (non-blocking): {e}")
         else:
             await db.checkins.insert_one({
                 "event_id": event_id, "user_id": uid, "at": now_utc().isoformat(),
@@ -572,26 +665,23 @@ async def approve_request(event_id: str, req_user_id: str, user=Depends(get_curr
         await db.events.update_one({"id": event_id}, {"$inc": {"checkins": 1}})
     await db.join_requests.delete_one({"event_id": event_id, "user_id": req_user_id})
     try:
-        await send_push(
-            recipients=[req_user_id],
-            data={"title": "Request approved ✅", "message": f"You're in for \"{ev['title']}\"", "action_url": f"/chat/{event_id}"},
-        )
+        await notify([req_user_id], "request_approved", {"event_title": ev["title"]}, f"/chat/{event_id}",
+                     event_id=event_id, actor_id=user["user_id"])
     except Exception as e:
-        logger.warning(f"approve push failed (non-blocking): {e}")
+        logger.warning(f"approve notify failed (non-blocking): {e}")
     return {"ok": True}
 
 
 @api_router.post("/events/{event_id}/requests/{req_user_id}/reject")
 async def reject_request(event_id: str, req_user_id: str, user=Depends(get_current_user)):
     ev = await require_host(event_id, user)
-    await db.join_requests.delete_one({"event_id": event_id, "user_id": req_user_id})
-    try:
-        await send_push(
-            recipients=[req_user_id],
-            data={"title": "Request update", "message": f"Your request for \"{ev['title']}\" was declined", "action_url": "/(tabs)/explore"},
-        )
-    except Exception as e:
-        logger.warning(f"reject push failed (non-blocking): {e}")
+    res = await db.join_requests.delete_one({"event_id": event_id, "user_id": req_user_id})
+    if res.deleted_count:
+        try:
+            await notify([req_user_id], "request_rejected", {"event_title": ev["title"]}, "/(tabs)/explore",
+                         event_id=event_id, actor_id=user["user_id"])
+        except Exception as e:
+            logger.warning(f"reject notify failed (non-blocking): {e}")
     return {"ok": True}
 
 
@@ -604,7 +694,7 @@ async def cancel_event(event_id: str, user=Depends(get_current_user)):
     try:
         await db.messages.insert_one({
             "id": str(uuid.uuid4()), "event_id": event_id, "user_id": "system",
-            "user_name": "LocalLoop", "user_picture": "", "system": True,
+            "user_name": "LocalLoop", "user_picture": "", "system": True, "system_key": "cancelled",
             "text": "\u26a0\ufe0f This event has been cancelled by the host.",
             "created_at": now_utc().isoformat(),
         })
@@ -613,15 +703,10 @@ async def cancel_event(event_id: str, user=Depends(get_current_user)):
     try:
         att = await db.checkins.find({"event_id": event_id}).to_list(500)
         reqs = await db.join_requests.find({"event_id": event_id, "status": "pending"}).to_list(500)
-        recipients = list({*(a["user_id"] for a in att), *(r["user_id"] for r in reqs)})
-        if recipients:
-            await send_push(
-                recipients=recipients,
-                data={"title": "Event cancelled \u274c", "message": f"\"{ev['title']}\" has been cancelled by the host.", "action_url": f"/event/{event_id}"},
-                idempotency_key=f"cancel_{event_id}",
-            )
+        await notify([a["user_id"] for a in att] + [r["user_id"] for r in reqs], "event_cancelled",
+                     {"event_title": ev["title"]}, f"/event/{event_id}", event_id=event_id, actor_id=user["user_id"])
     except Exception as e:
-        logger.warning(f"cancel push failed (non-blocking): {e}")
+        logger.warning(f"cancel notify failed (non-blocking): {e}")
     updated = await db.events.find_one({"id": event_id}, {"_id": 0})
     return with_live_count(updated)
 
@@ -645,6 +730,9 @@ class ProfileUpdate(BaseModel):
     # Registration confirmations: stored as timestamps (terms_accepted_at / truth_confirmed_at), never un-set.
     accept_terms: Optional[bool] = None  # Nutzungsbedingungen + Community-Richtlinien
     confirm_truth: Optional[bool] = None  # "Ich bestätige, dass meine Angaben der Wahrheit entsprechen"
+    lang: Optional[str] = None  # de | en — language of push texts
+    push_events: Optional[bool] = None  # push for requests, changes, cancellations
+    push_messages: Optional[bool] = None  # push for chat messages
 
 
 @api_router.get("/users/{user_id}")
@@ -686,6 +774,7 @@ async def delete_profile(user=Depends(get_current_user)):
             await db.events.update_one({"id": d["event_id"]}, {"$inc": {"offer_claimed": -1}})
     await db.blocks.delete_many({"$or": [{"user_id": uid}, {"blocked_id": uid}]})
     await db.reports.delete_many({"reporter_id": uid})  # reports *about* this user stay for moderation
+    await db.notifications.delete_many({"user_id": uid})
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
     return {"ok": True}
@@ -700,6 +789,8 @@ async def update_profile(payload: ProfileUpdate, user=Depends(get_current_user))
         if k in updates:
             updates[k] = updates[k].strip()
     reject_bad_words({k: updates.get(k) for k in ("name", "bio", "business_name")})
+    if "lang" in updates and updates["lang"] not in ("de", "en"):
+        raise HTTPException(status_code=400, detail="Invalid lang")
     # The birthdate is fixed once registration is complete (age rules depend on it).
     if "birthdate" in updates and user.get("onboarded") and user.get("birthdate") and updates["birthdate"] != user["birthdate"]:
         raise HTTPException(status_code=409, detail="Birthdate can't be changed")
@@ -719,10 +810,12 @@ async def update_profile(payload: ProfileUpdate, user=Depends(get_current_user))
 
 
 # ----------------------------- Attendance helpers -----------------------------
-async def require_attending(event_id: str, user: dict):
+async def require_attending(event_id: str, user: dict, allow_host: bool = False):
     ev = await db.events.find_one({"id": event_id}, {"_id": 0})
     if not ev:
         raise HTTPException(status_code=404, detail="Event not found")
+    if allow_host and ev.get("created_by") == user["user_id"]:
+        return ev  # hosts can always read and write in the chat of their own event
     attending = await db.checkins.find_one({"event_id": event_id, "user_id": user["user_id"]})
     if not attending:
         raise HTTPException(status_code=403, detail="Check in to join this event")
@@ -809,10 +902,13 @@ class MessageCreate(BaseModel):
 
 @api_router.get("/events/{event_id}/messages")
 async def get_messages(event_id: str, user=Depends(get_current_user)):
-    await require_attending(event_id, user)
+    await require_attending(event_id, user, allow_host=True)
     docs = await db.messages.find({"event_id": event_id}, {"_id": 0}).sort("created_at", 1).to_list(500)
     hidden = await blocked_ids(user)
     uid = user["user_id"]
+    # Opening the chat clears its entry in the notification center.
+    await db.notifications.update_many({"user_id": uid, "type": "chat", "event_id": event_id, "read_at": None},
+                                       {"$set": {"read_at": now_utc().isoformat()}})
     # Messages of blocked people disappear for the blocker; messages hidden after several reports
     # disappear for everyone except their author.
     return [m for m in docs if m.get("user_id") not in hidden and (not m.get("hidden") or m.get("user_id") == uid)]
@@ -823,7 +919,7 @@ MESSAGE_MAX_LEN = 2000
 
 @api_router.post("/events/{event_id}/messages")
 async def post_message(event_id: str, payload: MessageCreate, user=Depends(get_current_user)):
-    await require_attending(event_id, user)
+    ev_doc = await require_attending(event_id, user, allow_host=True)
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Empty message")
@@ -838,16 +934,42 @@ async def post_message(event_id: str, payload: MessageCreate, user=Depends(get_c
     await db.messages.insert_one(dict(msg))
     # Notify other attendees (non-blocking)
     try:
-        others = await db.checkins.find({"event_id": event_id, "user_id": {"$ne": user["user_id"]}}).to_list(100)
-        recipients = [o["user_id"] for o in others]
-        if recipients:
-            await send_push(
-                recipients=recipients,
-                data={"title": msg["user_name"], "message": text, "action_url": f"/chat/{event_id}"},
-            )
+        others = await db.checkins.find({"event_id": event_id, "user_id": {"$ne": user["user_id"]}}, {"_id": 0, "user_id": 1}).to_list(500)
+        await notify([o["user_id"] for o in others] + [ev_doc.get("created_by")], "chat",
+                     {"user_name": msg["user_name"], "event_title": ev_doc.get("title", ""), "text": text[:120]},
+                     f"/chat/{event_id}", event_id=event_id, actor_id=user["user_id"])
     except Exception as e:
-        logger.warning(f"chat push failed (non-blocking): {e}")
+        logger.warning(f"chat notify failed (non-blocking): {e}")
     return msg
+
+
+# ----------------------------- Notification center -----------------------------
+@api_router.get("/notifications")
+async def list_notifications(user=Depends(get_current_user)):
+    await ensure_reminders(user)
+    uid = user["user_id"]
+    items = await db.notifications.find({"user_id": uid}, {"_id": 0, "user_id": 0, "dedupe_key": 0}).sort("created_at", -1).to_list(50)
+    unread = await db.notifications.count_documents({"user_id": uid, "read_at": None})
+    return {"unread": unread, "items": items}
+
+
+@api_router.get("/notifications/unread-count")
+async def unread_notifications(user=Depends(get_current_user)):
+    await ensure_reminders(user)
+    return {"unread": await db.notifications.count_documents({"user_id": user["user_id"], "read_at": None})}
+
+
+class ReadBody(BaseModel):
+    ids: Optional[List[str]] = None  # None = all
+
+
+@api_router.post("/notifications/read")
+async def read_notifications(body: ReadBody = ReadBody(), user=Depends(get_current_user)):
+    query: dict = {"user_id": user["user_id"], "read_at": None}
+    if body.ids is not None:
+        query["id"] = {"$in": body.ids}
+    res = await db.notifications.update_many(query, {"$set": {"read_at": now_utc().isoformat()}})
+    return {"updated": res.modified_count}
 
 
 # ----------------------------- Reports & blocks (moderation) -----------------------------
@@ -1072,13 +1194,7 @@ async def toggle_save(event_id: str, user=Depends(get_current_user)):
         await db.saves.delete_one({"event_id": event_id, "user_id": user["user_id"]})
         return {"saved": False}
     await db.saves.insert_one({"event_id": event_id, "user_id": user["user_id"], "at": now_utc().isoformat()})
-    try:
-        await send_push(
-            recipients=[user["user_id"]],
-            data={"title": "Saved to your loop 🔖", "message": f"We'll remind you before \"{ev['title']}\" starts.", "action_url": "/(tabs)/explore"},
-        )
-    except Exception as e:
-        logger.warning(f"save push failed (non-blocking): {e}")
+    # No push here any more: saved events show up as reminders in the notification center 24h before they start.
     return {"saved": True}
 
 
@@ -1547,6 +1663,8 @@ async def seed_and_index():
     await db.deals.create_index("user_id")
     await db.blocks.create_index([("user_id", 1), ("blocked_id", 1)], unique=True)
     await db.reports.create_index([("reporter_id", 1), ("target_type", 1), ("target_id", 1)], unique=True)
+    await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
+    await db.notifications.create_index([("user_id", 1), ("read_at", 1)])
     SEED_VERSION = 2
     meta = await db.meta.find_one({"key": "seed_version"})
     current_version = (meta or {}).get("value", 0)

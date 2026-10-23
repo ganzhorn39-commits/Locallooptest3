@@ -13,6 +13,21 @@ async function authHeaders(): Promise<Record<string, string>> {
 // Errors keep the "<status>: <body>" message; `status` and the parsed `detail` are attached for callers that need them.
 export type ApiError = Error & { status?: number; detail?: any };
 
+export type NotificationType =
+  | "join_request" | "request_approved" | "request_rejected" | "event_cancelled" | "event_updated" | "chat" | "reminder";
+
+// One entry of the notification center; the app builds the text from `type` + `params`.
+export type AppNotification = {
+  id: string;
+  type: NotificationType;
+  params: Record<string, string>;
+  action_url: string;
+  event_id?: string;
+  count?: number;
+  created_at: string;
+  read_at: string | null;
+};
+
 export type ReportTarget = "user" | "event" | "message";
 export type ReportReason = "spam" | "harassment" | "hate" | "sexual" | "violence" | "fake" | "other";
 
@@ -223,6 +238,12 @@ export const api = {
   // Public profile + account
   getUser: (id: string): Promise<any> => req(`/users/${id}`),
   deleteAccount: () => req(`/profile`, { method: "DELETE" }),
+
+  // Notification center
+  notifications: (): Promise<{ unread: number; items: AppNotification[] }> => req(`/notifications`),
+  unreadNotifications: (): Promise<{ unread: number }> => req(`/notifications/unread-count`),
+  markNotificationsRead: (ids?: string[]) =>
+    req(`/notifications/read`, { method: "POST", body: JSON.stringify(ids ? { ids } : {}) }),
 
   // Moderation
   report: (target_type: ReportTarget, target_id: string, reason: ReportReason, note = "") =>

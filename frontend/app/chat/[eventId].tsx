@@ -16,7 +16,7 @@ import GuidelinesModal from "@/src/components/GuidelinesModal";
 
 type Message = {
   id: string; user_id: string; user_name: string; user_picture?: string; text: string;
-  system?: boolean; created_at: string;
+  system?: boolean; system_key?: string; created_at: string;
 };
 
 export default function Chat() {
@@ -92,7 +92,9 @@ export default function Chat() {
     if (item.system || item.user_id === "system") {
       return (
         <View style={styles.systemWrap} testID={`system-msg-${item.id}`}>
-          <Text style={[styles.systemText, { color: colors.onSurfaceTertiary, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>{item.text}</Text>
+          <Text style={[styles.systemText, { color: colors.onSurfaceTertiary, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+            {item.system_key ? t(`sys_${item.system_key}`) : item.text}
+          </Text>
         </View>
       );
     }

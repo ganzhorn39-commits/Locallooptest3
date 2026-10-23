@@ -28,6 +28,9 @@ type User = {
   identity_verified?: boolean;
   terms_accepted_at?: string; // Nutzungsbedingungen + Community-Richtlinien akzeptiert
   truth_confirmed_at?: string; // "Angaben entsprechen der Wahrheit" bestätigt
+  lang?: "de" | "en"; // language of push texts (synced from the app language)
+  push_events?: boolean;
+  push_messages?: boolean;
 };
 type AuthState = { user: User | null; loading: boolean; loggingIn: boolean; guest: boolean };
 

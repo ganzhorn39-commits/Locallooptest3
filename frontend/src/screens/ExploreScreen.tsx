@@ -16,6 +16,7 @@ import SearchFilterBar from "@/src/components/SearchFilterBar";
 import CategoryFilterRow from "@/src/components/CategoryFilterRow";
 import RadiusFilter from "@/src/components/RadiusFilter";
 import EventSheet from "@/src/components/EventSheet";
+import NotificationBell from "@/src/components/NotificationBell";
 
 export default function ExploreScreen() {
   const { colors } = useTheme();
@@ -99,7 +100,10 @@ export default function ExploreScreen() {
   return (
     <View style={[styles.container, { backgroundColor: colors.surface }]} testID="explore-screen">
       <View style={[styles.header, { paddingTop: insets.top + 8, backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
-        <Text style={[styles.title, { color: colors.onSurface }]}>{t("explore_title")}</Text>
+        <View style={styles.titleRow}>
+          <Text style={[styles.title, { color: colors.onSurface }]}>{t("explore_title")}</Text>
+          <NotificationBell />
+        </View>
         <SearchFilterBar query={query} onQuery={setQuery} quick={quick} onToggleQuick={toggleQuick} />
         <View style={{ marginHorizontal: -16, marginTop: 4 }}>
           <CategoryFilterRow selected={category} onSelect={setCategory} />
@@ -148,6 +152,7 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { paddingHorizontal: 16, paddingBottom: 8, borderBottomWidth: 1, gap: 10 },
   title: { fontSize: 28, fontWeight: "900", letterSpacing: -0.5 },
+  titleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   radiusRow: { flexDirection: "row" },
   radiusPill: { flexDirection: "row", alignItems: "center", gap: 6, height: 32, paddingHorizontal: 14, borderRadius: 16, borderWidth: 1 },
   radiusPillText: { fontSize: 13, fontWeight: "800" },

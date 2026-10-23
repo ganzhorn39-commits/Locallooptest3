@@ -12,18 +12,21 @@ export default function SearchFilterBar({
   quick,
   onToggleQuick,
   compact,
+  accessory,
 }: {
   query: string;
   onQuery: (v: string) => void;
   quick: QuickKey[];
   onToggleQuick: (k: QuickKey) => void;
   compact?: boolean;
+  accessory?: React.ReactNode; // shown right of the search field (bell, filter button)
 }) {
   const { colors } = useTheme();
   const { t } = useI18n();
 
   return (
     <View style={{ gap: 8 }}>
+      <View style={styles.searchRow}>
       <View style={[styles.search, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
         <Ionicons name="search" size={18} color={colors.onSurfaceTertiary} />
         <TextInput
@@ -40,6 +43,8 @@ export default function SearchFilterBar({
             <Ionicons name="close-circle" size={18} color={colors.onSurfaceTertiary} />
           </Pressable>
         )}
+      </View>
+      {accessory}
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pillRow}>
@@ -63,7 +68,8 @@ export default function SearchFilterBar({
 }
 
 const styles = StyleSheet.create({
-  search: { flexDirection: "row", alignItems: "center", gap: 8, height: 48, borderRadius: 14, borderWidth: 1, paddingHorizontal: 14 },
+  searchRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  search: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8, height: 48, borderRadius: 14, borderWidth: 1, paddingHorizontal: 14 },
   searchInput: { flex: 1, fontSize: 15 },
   pillRow: { gap: 8, paddingRight: 8, alignItems: "center" },
   pill: { flexShrink: 0, flexDirection: "row", alignItems: "center", gap: 6, height: 36, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1 },

@@ -19,6 +19,7 @@ import CategoryFilterRow from "@/src/components/CategoryFilterRow";
 import SearchFilterBar from "@/src/components/SearchFilterBar";
 import RadiusFilter from "@/src/components/RadiusFilter";
 import EventSheet from "@/src/components/EventSheet";
+import NotificationBell from "@/src/components/NotificationBell";
 import { useLocationPermission } from "@/src/location/LocationPermission";
 
 export default function MapHome() {
@@ -131,7 +132,7 @@ export default function MapHome() {
 
       <View style={[styles.headerWrap, { top: insets.top + 8 }]} pointerEvents="box-none">
         <View style={styles.searchWrap}>
-          <SearchFilterBar query={query} onQuery={setQuery} quick={quick} onToggleQuick={toggleQuick} />
+          <SearchFilterBar query={query} onQuery={setQuery} quick={quick} onToggleQuick={toggleQuick} accessory={<NotificationBell boxed />} />
         </View>
 
         <CategoryFilterRow selected={category} onSelect={setCategory} />
