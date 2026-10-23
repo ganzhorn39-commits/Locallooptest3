@@ -8,8 +8,8 @@ import { Calendar } from "react-native-calendars";
 import * as Haptics from "expo-haptics";
 import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
-import { api } from "@/src/api/client";
-import { DEFAULT_REGION, CategoryKey } from "@/src/constants/categories";
+import { api, EventItem } from "@/src/api/client";
+import { DEFAULT_REGION, CATEGORIES, CategoryKey } from "@/src/constants/categories";
 import LocationPicker from "@/src/components/LocationPicker";
 import CategoryWheel from "@/src/components/CategoryWheel";
 import TimeWheel from "@/src/components/TimeWheel";
@@ -40,32 +40,47 @@ function fmtDate(iso: string) {
   return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 }
 
-export default function CreateEventScreen({ onDone, showClose }: { onDone: () => void; showClose?: boolean }) {
+const localDateISO = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+const asCategory = (v?: string): CategoryKey =>
+  CATEGORIES.some((c) => c.key === v) ? (v as CategoryKey) : "nightlife";
+
+// `initial` switches the form into edit mode: every field starts from the existing event.
+export default function CreateEventScreen({ onDone, showClose, initial }: { onDone: () => void; showClose?: boolean; initial?: EventItem }) {
   const { colors } = useTheme();
   const { t } = useI18n();
   const insets = useSafeAreaInsets();
+  const editing = !!initial;
+  const start = initial ? new Date(initial.start_time) : null;
+  const hasStart = !!start && !isNaN(start.getTime());
+  // A category stock photo stays "no banner", so the picture follows a category change.
+  const customBanner = initial && !Object.values(CATEGORY_IMAGES).includes(initial.image_url)
+    ? (initial.banner_url || initial.image_url || "") : "";
 
   const todayISO = new Date().toISOString().slice(0, 10);
-  const [title, setTitle] = useState("");
-  const [category, setCategory] = useState<CategoryKey>("nightlife");
-  const [dateISO, setDateISO] = useState(todayISO);
+  const [title, setTitle] = useState(initial?.title || "");
+  const [category, setCategory] = useState<CategoryKey>(initial ? asCategory(initial.category) : "nightlife");
+  const [dateISO, setDateISO] = useState(hasStart ? localDateISO(start!) : todayISO);
   const [showCal, setShowCal] = useState(false);
-  const [hour, setHour] = useState(20);
-  const [minute, setMinute] = useState(0);
-  const [description, setDescription] = useState("");
-  const [instagram, setInstagram] = useState("");
-  const [website, setWebsite] = useState("");
-  const [tickets, setTickets] = useState("");
-  const [reservation, setReservation] = useState("");
-  const [capacity, setCapacity] = useState("");
-  const [address, setAddress] = useState("");
-  const [coord, setCoord] = useState({ latitude: DEFAULT_REGION.latitude, longitude: DEFAULT_REGION.longitude });
-  const [banner, setBanner] = useState("");
-  const [isRecurring, setIsRecurring] = useState(false);
-  const [freq, setFreq] = useState("weekly");
-  const [days, setDays] = useState<number[]>([]);
-  const [joinApproval, setJoinApproval] = useState<"auto" | "manual">("auto");
-  const [ageRestricted, setAgeRestricted] = useState(false);
+  const [hour, setHour] = useState(hasStart ? start!.getHours() : 20);
+  const [minute, setMinute] = useState(hasStart ? start!.getMinutes() : 0);
+  const [description, setDescription] = useState(initial?.description || "");
+  const [instagram, setInstagram] = useState(initial?.instagram || "");
+  const [website, setWebsite] = useState(initial?.website || "");
+  const [tickets, setTickets] = useState(initial?.tickets_url || "");
+  const [reservation, setReservation] = useState(initial?.reservation_url || "");
+  const [capacity, setCapacity] = useState(initial?.capacity ? String(initial.capacity) : "");
+  const [address, setAddress] = useState(initial?.address || "");
+  const [coord, setCoord] = useState(initial
+    ? { latitude: initial.latitude, longitude: initial.longitude }
+    : { latitude: DEFAULT_REGION.latitude, longitude: DEFAULT_REGION.longitude });
+  const [banner, setBanner] = useState(customBanner);
+  const [isRecurring, setIsRecurring] = useState(!!initial?.is_recurring);
+  const [freq, setFreq] = useState(initial?.recurrence_freq || "weekly");
+  const [days, setDays] = useState<number[]>(initial?.recurrence_days || []);
+  const [joinApproval, setJoinApproval] = useState<"auto" | "manual">(initial?.join_approval || "auto");
+  const [ageRestricted, setAgeRestricted] = useState(!!initial?.age_restricted);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -79,6 +94,9 @@ export default function CreateEventScreen({ onDone, showClose }: { onDone: () =>
   const submit = async () => {
     Keyboard.dismiss();
     if (!title.trim()) { setError(t("title_required")); return; }
+    const cap = parseInt(capacity, 10) || 0;
+    const going = initial?.spots_taken ?? initial?.checkins ?? 0;
+    if (editing && cap > 0 && cap < going) { setError(t("edit_capacity_error").replace("{n}", String(going))); return; }
     setError(""); setSubmitting(true);
     try {
       const when = new Date(dateISO + "T00:00:00");
@@ -87,23 +105,35 @@ export default function CreateEventScreen({ onDone, showClose }: { onDone: () =>
       const recLabel = isRecurring && days.length
         ? `${FREQS.find((f) => f.key === freq)?.label} · ${days.map((d) => WEEKDAYS[d]).join(", ")} at ${timeStr}`
         : "";
-      await api.createEvent({
+      const payload = {
         title: title.trim(), category, start_time: when.toISOString(),
         description: description.trim(),
         image_url: banner || CATEGORY_IMAGES[category], banner_url: banner || CATEGORY_IMAGES[category],
         instagram: instagram.trim(), website: website.trim(), tickets_url: tickets.trim(),
-        reservation_url: reservation.trim(), capacity: parseInt(capacity, 10) || 0,
+        reservation_url: reservation.trim(), capacity: cap,
         latitude: coord.latitude, longitude: coord.longitude, address: address.trim(),
         is_recurring: isRecurring && days.length > 0, recurrence_freq: freq,
         recurrence_days: isRecurring ? days : [], recurrence_label: recLabel,
         join_approval: joinApproval, age_restricted: ageRestricted,
-      });
+      };
+      if (initial) {
+        // Keep the stored timestamp when the date/time was not touched (avoids a false "time changed" notice).
+        if (hasStart && Math.floor(when.getTime() / 60000) === Math.floor(start!.getTime() / 60000)) payload.start_time = initial.start_time;
+        await api.updateEvent(initial.id, payload);
+      } else {
+        await api.createEvent(payload);
+      }
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setTitle(""); setDescription(""); setInstagram(""); setWebsite(""); setTickets(""); setAddress("");
+      if (!editing) { setTitle(""); setDescription(""); setInstagram(""); setWebsite(""); setTickets(""); setAddress(""); }
       onDone();
-    } catch {
+    } catch (e: any) {
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setError(t("create_failed"));
+      const msg = String(e?.message || "");
+      const full = msg.match(/check-ins \((\d+)\)/);
+      if (!editing) setError(t("create_failed"));
+      else if (full) setError(t("edit_capacity_error").replace("{n}", full[1]));
+      else if (msg.startsWith("409")) setError(t("edit_cancelled"));
+      else setError(t("edit_failed"));
     } finally { setSubmitting(false); }
   };
 
@@ -117,7 +147,7 @@ export default function CreateEventScreen({ onDone, showClose }: { onDone: () =>
             <Ionicons name="close" size={26} color={colors.onSurface} />
           </Pressable>
         ) : <View style={{ width: 26 }} />}
-        <Text style={[styles.headerTitle, { color: colors.onSurface }]}>{t("host_event")}</Text>
+        <Text style={[styles.headerTitle, { color: colors.onSurface }]}>{editing ? t("edit_event") : t("host_event")}</Text>
         <View style={{ width: 26 }} />
       </View>
 
@@ -243,13 +273,20 @@ export default function CreateEventScreen({ onDone, showClose }: { onDone: () =>
           </View>
         </Field>
 
+        {editing && (
+          <View testID="edit-notify-hint" style={[styles.recurRow, { backgroundColor: colors.brandTertiary, borderColor: colors.brandTertiary }]}>
+            <Ionicons name="notifications-outline" size={18} color={colors.onBrandTertiary} />
+            <Text style={{ color: colors.onBrandTertiary, fontSize: 13, flex: 1, lineHeight: 18 }}>{t("edit_notify_hint")}</Text>
+          </View>
+        )}
+
         {!!error && <Text style={[styles.error, { color: colors.error }]} testID="form-error">{error}</Text>}
       </KeyboardAwareScrollView>
 
       <KeyboardStickyView>
         <View style={[styles.footer, { paddingBottom: insets.bottom + 12, borderTopColor: colors.border, backgroundColor: colors.surface }]}>
           <Pressable testID="submit-event" onPress={submit} disabled={submitting} style={[styles.submit, { backgroundColor: colors.brand, opacity: submitting ? 0.7 : 1 }]}>
-            {submitting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.submitText}>{t("publish")}</Text>}
+            {submitting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.submitText}>{editing ? t("save_changes") : t("publish")}</Text>}
           </Pressable>
         </View>
       </KeyboardStickyView>

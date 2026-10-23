@@ -131,6 +131,13 @@ const DICT: Record<Lang, Record<string, string>> = {
     dash_request_one: "request", dash_request_other: "requests", dash_for: "for",
     dash_load_failed: "Could not load your dashboard.", dash_action_failed: "That didn't work. Please try again.",
     retry: "Try again", save_failed: "Could not save. Please try again.", personal_details: "Personal details",
+    // edit event
+    edit_event: "Edit event", save_changes: "Save changes",
+    edit_notify_hint: "If you change the time or place, everyone who's going gets notified.",
+    edit_capacity_error: "Capacity can't be lower than the {n} people already going.",
+    edit_failed: "Could not save your changes. Please try again.",
+    edit_not_host: "Only the host can edit this event.", edit_cancelled: "Cancelled events can't be edited.",
+    event_load_failed: "Could not load this event.",
   },
   de: {
     tab_map: "Karte", tab_explore: "Entdecken", tab_create: "Erstellen", tab_chats: "Chats", tab_profile: "Profil",
@@ -239,6 +246,12 @@ const DICT: Record<Lang, Record<string, string>> = {
     dash_request_one: "Anfrage", dash_request_other: "Anfragen", dash_for: "für",
     dash_load_failed: "Dashboard konnte nicht geladen werden.", dash_action_failed: "Das hat nicht geklappt. Bitte versuch es noch einmal.",
     retry: "Erneut versuchen", save_failed: "Speichern fehlgeschlagen. Bitte versuch es noch einmal.", personal_details: "Persönliche Angaben",
+    edit_event: "Event bearbeiten", save_changes: "Änderungen speichern",
+    edit_notify_hint: "Wenn du Zeit oder Ort änderst, werden alle Teilnehmer benachrichtigt.",
+    edit_capacity_error: "Die Kapazität kann nicht unter den {n} bestehenden Zusagen liegen.",
+    edit_failed: "Änderungen konnten nicht gespeichert werden. Bitte versuch es noch einmal.",
+    edit_not_host: "Nur der Veranstalter kann dieses Event bearbeiten.", edit_cancelled: "Abgesagte Events können nicht bearbeitet werden.",
+    event_load_failed: "Event konnte nicht geladen werden.",
   },
 };
 

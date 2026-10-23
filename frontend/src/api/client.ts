@@ -49,6 +49,8 @@ export type EventItem = {
   venue_name?: string;
   verified?: boolean;
   is_recurring?: boolean;
+  recurrence_freq?: string;
+  recurrence_days?: number[];
   recurrence_label?: string;
   next_occurrence?: string;
   join_approval?: "auto" | "manual";
@@ -125,6 +127,8 @@ export const api = {
   getEvent: (id: string): Promise<EventItem> => req(`/events/${id}`),
   createEvent: (payload: any): Promise<EventItem> =>
     req(`/events`, { method: "POST", body: JSON.stringify(payload) }),
+  updateEvent: (id: string, payload: any): Promise<EventItem> =>
+    req(`/events/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   checkin: (id: string, body?: { visibility?: string; at_venue?: boolean }): Promise<EventItem & { checked_in: boolean; pending?: boolean }> =>
     req(`/events/${id}/checkin`, { method: "POST", body: JSON.stringify(body || {}) }),
   checkinStatus: (id: string): Promise<{ checked_in: boolean; pending?: boolean }> =>

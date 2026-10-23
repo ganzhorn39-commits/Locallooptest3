@@ -97,6 +97,7 @@ function AuthGate() {
         <Stack.Screen name="chat/[eventId]" options={{ animation: "slide_from_bottom" }} />
         <Stack.Screen name="crew/[id]" />
         <Stack.Screen name="dashboard" />
+        <Stack.Screen name="edit-event/[id]" options={{ animation: "slide_from_bottom" }} />
       </Stack>
       {showIntro && <SplashIntro onDone={() => setShowIntro(false)} />}
     </>

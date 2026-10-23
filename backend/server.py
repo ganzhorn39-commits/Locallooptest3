@@ -285,6 +285,90 @@ async def create_event(payload: EventCreate, user=Depends(get_current_user)):
     return with_live_count(event.dict())
 
 
+class EventUpdate(BaseModel):
+    # Every field optional: only what is sent gets changed. Host/status/counters are not editable here.
+    title: Optional[str] = None
+    category: Optional[str] = None
+    start_time: Optional[str] = None
+    description: Optional[str] = None
+    image_url: Optional[str] = None
+    banner_url: Optional[str] = None
+    emoji: Optional[str] = None
+    instagram: Optional[str] = None
+    website: Optional[str] = None
+    tickets_url: Optional[str] = None
+    reservation_url: Optional[str] = None
+    capacity: Optional[int] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    address: Optional[str] = None
+    venue_name: Optional[str] = None
+    is_recurring: Optional[bool] = None
+    recurrence_freq: Optional[str] = None
+    recurrence_days: Optional[List[int]] = None
+    recurrence_label: Optional[str] = None
+    join_approval: Optional[str] = None
+    age_restricted: Optional[bool] = None
+
+
+@api_router.patch("/events/{event_id}")
+async def update_event(event_id: str, payload: EventUpdate, user=Depends(get_current_user)):
+    ev = await require_host(event_id, user)
+    if ev.get("status") == "cancelled":
+        raise HTTPException(status_code=409, detail="Event cancelled")
+    updates = {k: v for k, v in payload.dict().items() if v is not None}
+    if "title" in updates:
+        updates["title"] = updates["title"].strip()
+        if not updates["title"]:
+            raise HTTPException(status_code=400, detail="Title is required")
+    if "start_time" in updates and not parse_iso(updates["start_time"]):
+        raise HTTPException(status_code=400, detail="Invalid start_time")
+    if updates.get("join_approval", "auto") not in ("auto", "manual"):
+        raise HTTPException(status_code=400, detail="Invalid join_approval")
+    if "capacity" in updates:
+        updates["capacity"] = max(0, updates["capacity"])
+        going = await db.checkins.count_documents({"event_id": event_id})
+        if 0 < updates["capacity"] < going:
+            raise HTTPException(status_code=409, detail=f"Capacity below current check-ins ({going})")
+    if not updates:
+        return with_live_count(ev)
+
+    await db.events.update_one({"id": event_id}, {"$set": updates})
+    updated = await db.events.find_one({"id": event_id}, {"_id": 0})
+
+    # Attendees (and open requests) hear about it when the time or the place changes.
+    time_changed = (
+        parse_iso(updated.get("start_time")) != parse_iso(ev.get("start_time"))
+        or bool(updated.get("is_recurring")) != bool(ev.get("is_recurring"))
+        or sorted(updated.get("recurrence_days") or []) != sorted(ev.get("recurrence_days") or [])
+    )
+    place_changed = (
+        (updated.get("address") or "").strip() != (ev.get("address") or "").strip()
+        or abs(float(updated.get("latitude", 0)) - float(ev.get("latitude", 0))) > 1e-4
+        or abs(float(updated.get("longitude", 0)) - float(ev.get("longitude", 0))) > 1e-4
+    )
+    if time_changed or place_changed:
+        what = "time and place" if time_changed and place_changed else ("time" if time_changed else "place")
+        try:
+            await db.messages.insert_one({
+                "id": str(uuid.uuid4()), "event_id": event_id, "user_id": "system",
+                "user_name": "LocalLoop", "user_picture": "", "system": True,
+                "text": f"✏️ The host changed the {what} of this event. Check the details before you go.",
+                "created_at": now_utc().isoformat(),
+            })
+            att = await db.checkins.find({"event_id": event_id}).to_list(500)
+            reqs = await db.join_requests.find({"event_id": event_id, "status": "pending"}).to_list(500)
+            recipients = list({*(a["user_id"] for a in att), *(r["user_id"] for r in reqs)} - {user["user_id"]})
+            if recipients:
+                await send_push(
+                    recipients=recipients,
+                    data={"title": "Event updated ✏️", "message": f"\"{updated['title']}\" has a new {what}.", "action_url": f"/event/{event_id}"},
+                )
+        except Exception as e:
+            logger.warning(f"update notify failed (non-blocking): {e}")
+    return with_live_count(updated)
+
+
 class CheckinBody(BaseModel):
     visibility: str = "public"  # public | friends | anonymous
     at_venue: bool = False

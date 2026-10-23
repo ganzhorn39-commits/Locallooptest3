@@ -312,6 +312,9 @@ export default function DashboardScreen() {
               <>
                 <Text style={[styles.sheetTitle, { color: colors.onSurface }]} numberOfLines={2}>{manage.title}</Text>
                 <Text style={[styles.rowSub, { color: colors.onSurfaceTertiary, marginBottom: 4 }]}>{t("dash_manage")}</Text>
+                {manage.phase !== "cancelled" && (
+                  <SheetOption testID="manage-edit" icon="create-outline" label={t("edit_event")} colors={colors} onPress={() => openPath(`/edit-event/${manage.id}`)} />
+                )}
                 <SheetOption testID="manage-view" icon="eye-outline" label={t("dash_view_event")} colors={colors} onPress={() => openPath(`/event/${manage.id}`)} />
                 <SheetOption testID="manage-participants" icon="people-outline" label={t("attendees")} colors={colors} onPress={() => openPath(`/participants/${manage.id}`)} />
                 {manage.phase !== "cancelled" && (

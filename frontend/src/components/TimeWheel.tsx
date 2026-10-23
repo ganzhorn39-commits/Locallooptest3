@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef } from "react";
-import { View, Text, StyleSheet, ScrollView, NativeSyntheticEvent, NativeScrollEvent } from "react-native";
+import { View, Text, StyleSheet, ScrollView, NativeSyntheticEvent, NativeScrollEvent, Platform } from "react-native";
 import { useTheme } from "@/src/theme/theme";
 
 const ITEM_H = 44;
@@ -21,28 +21,66 @@ function WheelColumn({
 }) {
   const { colors } = useTheme();
   const ref = useRef<ScrollView>(null);
+  const settling = useRef(false);
+  const didInit = useRef(false);
+  const webReady = useRef(false);
+  const webTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const indexRef = useRef(index);
+
+  // Same approach as DateWheel: a fixed column height (otherwise the column grows to its full
+  // content height, cannot scroll and always shows the middle of the list) + a deferred initial scroll.
+  const scrollToIndex = (i: number, animated: boolean) => {
+    ref.current?.scrollTo({ y: i * ITEM_H, animated });
+  };
 
   useEffect(() => {
-    const t = setTimeout(() => ref.current?.scrollTo({ y: index * ITEM_H, animated: false }), 30);
-    return () => clearTimeout(t);
-  }, []);
+    indexRef.current = index;
+    if (didInit.current) scrollToIndex(index, false);
+  }, [index]);
+
+  useEffect(() => () => { if (webTimer.current) clearTimeout(webTimer.current); }, []);
+
+  const settleAt = (y: number) => {
+    const i = Math.max(0, Math.min(items.length - 1, Math.round(y / ITEM_H)));
+    if (Math.abs(y - i * ITEM_H) > 1) scrollToIndex(i, true);
+    if (i !== indexRef.current) onIndexChange(i);
+  };
 
   const onEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (settling.current) return;
+    settling.current = true;
+    setTimeout(() => { settling.current = false; }, 220);
+    settleAt(e.nativeEvent.contentOffset.y);
+  };
+
+  // Browsers fire no drag/momentum-end events for mouse-wheel or trackpad scrolling,
+  // so on web a short pause in scroll events counts as the end of the gesture.
+  const onWebScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!webReady.current) return;
     const y = e.nativeEvent.contentOffset.y;
-    const i = Math.max(0, Math.min(items.length - 1, Math.round(y / ITEM_H)));
-    if (i !== index) onIndexChange(i);
-    ref.current?.scrollTo({ y: i * ITEM_H, animated: true });
+    if (webTimer.current) clearTimeout(webTimer.current);
+    webTimer.current = setTimeout(() => settleAt(y), 150);
   };
 
   return (
     <ScrollView
       ref={ref}
       testID={testID}
-      style={{ width }}
+      style={{ width, height: ITEM_H * VISIBLE }}
       showsVerticalScrollIndicator={false}
-      snapToInterval={ITEM_H}
       decelerationRate="fast"
+      onContentSizeChange={() => {
+        if (!didInit.current) {
+          didInit.current = true;
+          requestAnimationFrame(() => scrollToIndex(index, false));
+          setTimeout(() => scrollToIndex(index, false), 120);
+          setTimeout(() => { webReady.current = true; }, 300);
+        }
+      }}
       onMomentumScrollEnd={onEnd}
+      onScrollEndDrag={onEnd}
+      onScroll={Platform.OS === "web" ? onWebScroll : undefined}
+      scrollEventThrottle={16}
       contentContainerStyle={{ paddingVertical: PAD }}
     >
       {items.map((it, i) => (

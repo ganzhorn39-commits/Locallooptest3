@@ -19,7 +19,7 @@ export default function LocationPicker({ coord, onChange }: Props) {
       <MapView
         provider={PROVIDER_DEFAULT}
         style={StyleSheet.absoluteFill}
-        initialRegion={DEFAULT_REGION}
+        initialRegion={{ ...DEFAULT_REGION, latitude: coord.latitude, longitude: coord.longitude }}
         customMapStyle={isDark ? darkMapStyle : []}
         onPress={(e) => {
           const nc = e.nativeEvent.coordinate;
