@@ -89,6 +89,8 @@ export default function MapCanvas({ events, region, onSelect, mapRef, radiusKm, 
       showsMyLocationButton={false}
       customMapStyle={isDark ? darkMapStyle : []}
       onRegionChangeComplete={setCurRegion}
+      // keeps the Apple/Google legal logos above the floating "Überrasch mich" button
+      mapPadding={{ top: 0, right: 0, bottom: 72, left: 0 }}
       testID="map-view"
     >
       {radiusKm && circleCenter && (

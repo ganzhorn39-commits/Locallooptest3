@@ -48,7 +48,8 @@ const asCategory = (v?: string): CategoryKey =>
   CATEGORIES.some((c) => c.key === v) ? (v as CategoryKey) : "nightlife";
 
 // `initial` switches the form into edit mode: every field starts from the existing event.
-export default function CreateEventScreen({ onDone, showClose, initial }: { onDone: () => void; showClose?: boolean; initial?: EventItem }) {
+// `inTabs`: rendered inside the tab navigator, which already keeps the screen above the home indicator.
+export default function CreateEventScreen({ onDone, showClose, initial, inTabs }: { onDone: () => void; showClose?: boolean; initial?: EventItem; inTabs?: boolean }) {
   const { colors } = useTheme();
   const { t } = useI18n();
   const { user } = useAuth();
@@ -321,7 +322,7 @@ export default function CreateEventScreen({ onDone, showClose, initial }: { onDo
       </KeyboardAwareScrollView>
 
       <KeyboardStickyView>
-        <View style={[styles.footer, { paddingBottom: insets.bottom + 12, borderTopColor: colors.border, backgroundColor: colors.surface }]}>
+        <View style={[styles.footer, { paddingBottom: (inTabs ? 0 : insets.bottom) + 12, borderTopColor: colors.border, backgroundColor: colors.surface }]}>
           <Pressable testID="submit-event" onPress={submit} disabled={submitting} style={[styles.submit, { backgroundColor: colors.brand, opacity: submitting ? 0.7 : 1 }]}>
             {submitting ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.submitText}>{editing ? t("save_changes") : t("publish")}</Text>}
           </Pressable>

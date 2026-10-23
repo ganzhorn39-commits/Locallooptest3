@@ -87,6 +87,9 @@ export type EventItem = {
   offer_title?: string;
   offer_limit?: number;
   offer_claimed?: number;
+  host_name?: string;
+  host_is_business?: boolean;
+  trend_score?: number;
 };
 
 // Host dashboard (GET /my/dashboard) — real numbers only, no simulated live counts.

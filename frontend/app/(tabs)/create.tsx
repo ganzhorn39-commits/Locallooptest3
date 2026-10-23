@@ -9,5 +9,5 @@ export default function CreateTab() {
   const { user } = useAuth();
   const { t } = useI18n();
   if (!user) return <GuestGate icon="add-circle-outline" message={t("guest_create")} />;
-  return <CreateEventScreen onDone={() => router.push("/(tabs)/explore")} />;
+  return <CreateEventScreen inTabs onDone={() => router.push("/(tabs)/explore")} />;
 }

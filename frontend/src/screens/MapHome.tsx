@@ -12,19 +12,21 @@ import { useAuth } from "@/src/auth/AuthContext";
 import { useI18n } from "@/src/i18n";
 import { api, EventItem } from "@/src/api/client";
 import { DEFAULT_REGION } from "@/src/constants/categories";
-import { filterEvents, QuickKey } from "@/src/utils/filters";
+import { filterEvents, QuickKey, topTrending } from "@/src/utils/filters";
 import { isMinor } from "@/src/utils/age";
 import MapCanvas from "@/src/components/MapCanvas";
 import CategoryFilterRow from "@/src/components/CategoryFilterRow";
 import SearchFilterBar from "@/src/components/SearchFilterBar";
 import RadiusFilter from "@/src/components/RadiusFilter";
 import EventSheet from "@/src/components/EventSheet";
+import { useLocationPermission } from "@/src/location/LocationPermission";
 
 export default function MapHome() {
   const { colors } = useTheme();
   const { user } = useAuth();
   const { t } = useI18n();
   const insets = useSafeAreaInsets();
+  const { askForLocation } = useLocationPermission();
 
   const [events, setEvents] = useState<EventItem[]>([]);
   const [category, setCategory] = useState("all");
@@ -54,16 +56,18 @@ export default function MapHome() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const filtered = useMemo(
-    () => filterEvents(events, { query, category, quick, userLoc, hideRestricted: isMinor(user?.birthdate) }),
-    [events, query, category, quick, userLoc, user]
-  );
+  const filtered = useMemo(() => {
+    const base = filterEvents(events, {
+      query, category: category === "trending" ? "all" : category, quick, userLoc, radiusKm,
+      hideRestricted: isMinor(user?.birthdate),
+    });
+    return category === "trending" ? topTrending(base) : base;
+  }, [events, query, category, quick, userLoc, radiusKm, user]);
 
   const requestLocation = useCallback(async () => {
     if (Platform.OS === "web") return;
     try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") return;
+      if (!(await askForLocation())) return;
       const loc = await Location.getCurrentPositionAsync({});
       const c = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
       setUserLoc(c);
@@ -71,11 +75,12 @@ export default function MapHome() {
       setRegion(r);
       mapRef.current?.animateToRegion?.(r, 600);
     } catch {}
-  }, []);
+  }, [askForLocation]);
 
   React.useEffect(() => { requestLocation(); }, [requestLocation]);
 
   const onSelectPin = useCallback(async (e: EventItem) => {
+    if (Platform.OS !== "web") Haptics.selectionAsync();
     setSelected(e);
     setCheckedIn(false);
     sheetRef.current?.snapToIndex(0);
@@ -155,7 +160,7 @@ export default function MapHome() {
         <Pressable
           testID="recenter-button"
           onPress={requestLocation}
-          style={[styles.recenter, { bottom: insets.bottom + 150, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
+          style={[styles.recenter, { bottom: 76, backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}
         >
           <Ionicons name="locate" size={22} color={colors.brand} />
         </Pressable>
@@ -164,7 +169,7 @@ export default function MapHome() {
       <Pressable
         testID="surprise-me-button"
         onPress={surpriseMe}
-        style={[styles.surprise, { bottom: insets.bottom + 90, backgroundColor: colors.surfaceInverse }]}
+        style={[styles.surprise, { bottom: 16, backgroundColor: colors.surfaceInverse }]}
       >
         <Text style={{ fontSize: 16 }}>🎲</Text>
         <Text style={[styles.surpriseText, { color: colors.onSurfaceInverse }]}>{t("surprise_me")}</Text>
@@ -173,6 +178,15 @@ export default function MapHome() {
       {loading && (
         <View style={styles.loadingOverlay} pointerEvents="none">
           <ActivityIndicator color={colors.brand} size="large" />
+        </View>
+      )}
+
+      {!loading && filtered.length === 0 && (
+        <View style={styles.loadingOverlay} pointerEvents="none" testID="map-empty">
+          <View style={[styles.emptyCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+            <Ionicons name={category === "trending" ? "flame-outline" : "search"} size={22} color={colors.onSurfaceTertiary} />
+            <Text style={[styles.emptyText, { color: colors.onSurface }]}>{category === "trending" ? t("trending_empty") : t("map_empty")}</Text>
+          </View>
         </View>
       )}
 
@@ -187,7 +201,7 @@ export default function MapHome() {
         backgroundStyle={{ backgroundColor: colors.surfaceSecondary }}
       >
         {selected && (
-          <EventSheet event={selected} checkedIn={checkedIn} onCheckin={onCheckin} bottomInset={insets.bottom} userLoc={userLoc} />
+          <EventSheet event={selected} checkedIn={checkedIn} onCheckin={onCheckin} bottomInset={0} userLoc={userLoc} />
         )}
       </BottomSheet>
     </View>
@@ -210,4 +224,6 @@ const styles = StyleSheet.create({
   },
   surpriseText: { fontSize: 15, fontWeight: "800" },
   loadingOverlay: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, alignItems: "center", justifyContent: "center" },
+  emptyCard: { flexDirection: "row", alignItems: "center", gap: 10, maxWidth: 320, marginHorizontal: 24, padding: 16, borderRadius: 16, borderWidth: 1 },
+  emptyText: { flex: 1, fontSize: 14, fontWeight: "600", lineHeight: 20 },
 });

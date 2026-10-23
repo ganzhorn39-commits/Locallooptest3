@@ -13,6 +13,7 @@ import { useIconFonts } from "@/src/hooks/use-icon-fonts";
 import { ThemeProvider, useTheme } from "@/src/theme/theme";
 import { AuthProvider, useAuth } from "@/src/auth/AuthContext";
 import { I18nProvider } from "@/src/i18n";
+import { LocationPermissionProvider } from "@/src/location/LocationPermission";
 import { registerForPush } from "@/src/push";
 import SplashIntro from "@/src/components/SplashIntro";
 
@@ -121,9 +122,11 @@ export default function RootLayout() {
         <SafeAreaProvider>
           <ThemeProvider>
             <I18nProvider>
-              <AuthProvider>
-                <AuthGate />
-              </AuthProvider>
+              <LocationPermissionProvider>
+                <AuthProvider>
+                  <AuthGate />
+                </AuthProvider>
+              </LocationPermissionProvider>
             </I18nProvider>
           </ThemeProvider>
         </SafeAreaProvider>

@@ -163,6 +163,12 @@ const DICT: Record<Lang, Record<string, string>> = {
     scan_err_unknown: "Unknown code.", scan_err_foreign: "This deal belongs to another business.",
     scan_camera_needed: "Camera access is needed to scan codes.",
     scan_only_business: "Only business accounts can redeem deals.",
+    // stage 1: layout, trending, location, event page
+    trending_hint: "based on real check-ins and saves", trending_empty: "Nothing is trending right now.",
+    map_empty: "No events for this filter. Try a bigger radius or another date.",
+    loc_title: "Share your location?", loc_body: "LocalLoop needs your location to show events near you on the map.",
+    loc_allow: "Allow location", loc_later: "Not now",
+    share: "Share", hosted_by: "Hosted by {name}", event_cancelled_banner: "This event was cancelled.",
   },
   de: {
     tab_map: "Karte", tab_explore: "Entdecken", tab_create: "Erstellen", tab_chats: "Chats", tab_profile: "Profil",
@@ -301,6 +307,11 @@ const DICT: Record<Lang, Record<string, string>> = {
     scan_err_unknown: "Unbekannter Code.", scan_err_foreign: "Dieser Deal gehört zu einem anderen Business.",
     scan_camera_needed: "Zum Scannen wird Kamerazugriff benötigt.",
     scan_only_business: "Nur Business-Accounts können Deals einlösen.",
+    trending_hint: "nach echten Check-ins und Merklisten", trending_empty: "Gerade ist noch nichts angesagt.",
+    map_empty: "Keine Events für diesen Filter gefunden. Passe den Radius oder das Datum an.",
+    loc_title: "Standort freigeben?", loc_body: "LocalLoop benötigt deinen Standort, um Events in deiner Nähe auf der Karte anzuzeigen.",
+    loc_allow: "Standort erlauben", loc_later: "Später",
+    share: "Teilen", hosted_by: "Veranstaltet von {name}", event_cancelled_banner: "Dieses Event wurde abgesagt.",
   },
 };
 

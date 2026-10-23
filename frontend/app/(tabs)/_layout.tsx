@@ -2,12 +2,11 @@ import React from "react";
 import { Tabs } from "expo-router";
 import { Platform } from "react-native";
 import Ionicons from "@react-native-vector-icons/ionicons";
-import { BlurView } from "expo-blur";
 import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
 
 export default function TabsLayout() {
-  const { colors, isDark } = useTheme();
+  const { colors } = useTheme();
   const { t } = useI18n();
 
   return (
@@ -16,18 +15,15 @@ export default function TabsLayout() {
         headerShown: false,
         tabBarActiveTintColor: colors.brand,
         tabBarInactiveTintColor: colors.onSurfaceTertiary,
+        // Solid, in-flow bar: screens end above it, so the map doesn't show through and
+        // bottom buttons (e.g. "Event veröffentlichen") and the map's legal logos stay visible.
         tabBarStyle: {
-          position: "absolute",
-          backgroundColor: Platform.OS === "ios" ? "transparent" : colors.surfaceSecondary,
+          backgroundColor: colors.surfaceSecondary,
           borderTopColor: colors.border,
           borderTopWidth: 1,
           height: 58 + (Platform.OS === "ios" ? 24 : 0),
           paddingTop: 6,
         },
-        tabBarBackground:
-          Platform.OS === "ios"
-            ? () => <BlurView intensity={80} tint={isDark ? "dark" : "light"} style={{ flex: 1 }} />
-            : undefined,
         tabBarLabelStyle: { fontSize: 11, fontWeight: "600" },
       }}
     >

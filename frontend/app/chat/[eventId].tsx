@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, FlatList, Platform, Keyboard } from "react-native";
+import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import Ionicons from "@react-native-vector-icons/ionicons";
@@ -51,6 +52,7 @@ export default function Chat() {
     try {
       const msg = await api.sendMessage(eventId, t);
       setMessages((prev) => [...prev, msg]);
+      if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
   };
 

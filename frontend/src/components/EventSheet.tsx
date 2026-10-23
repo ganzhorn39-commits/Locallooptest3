@@ -217,6 +217,15 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
 
         <DealCard key={event.id} event={event} checkedIn={checkedIn} />
 
+        {!!user && user.user_id === event.created_by && (
+          <Pressable testID="sheet-manage-event" onPress={() => router.push(`/event/${event.id}`)}
+            style={[styles.chatBtn, { backgroundColor: colors.surfaceTertiary, borderColor: colors.border }]}>
+            <Ionicons name="settings-outline" size={20} color={colors.brand} />
+            <Text style={[styles.chatText, { color: colors.onSurface }]}>{t("dash_manage")}</Text>
+            <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} style={{ marginLeft: "auto" }} />
+          </Pressable>
+        )}
+
         {/* Attendees */}
         {attendeeList.length > 0 && (
           <View testID="attendees-section">

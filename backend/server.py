@@ -267,13 +267,35 @@ def compute_next_occurrence(doc: dict) -> str:
     return doc["start_time"]
 
 
+async def attach_hosts(docs: List[dict]) -> List[dict]:
+    """Add host_name / host_is_business (search by business name, business pins, host filter) in one query."""
+    ids = list({d.get("created_by") for d in docs if d.get("created_by")})
+    hosts = await db.users.find(
+        {"user_id": {"$in": ids}}, {"_id": 0, "user_id": 1, "name": 1, "account_type": 1, "business_name": 1}
+    ).to_list(None)
+    hosts = {h["user_id"]: h for h in hosts}
+    for d in docs:
+        h = hosts.get(d.get("created_by"), {})
+        is_biz = h.get("account_type") == "business"
+        d["host_is_business"] = is_biz
+        d["host_name"] = (h.get("business_name") or d.get("venue_name") or h.get("name") or "") if is_biz else (h.get("name") or "")
+    return docs
+
+
 @api_router.get("/events")
 async def list_events(category: Optional[str] = None):
-    query = {}
+    # Cancelled events leave the map and the lists (their page and chat stay reachable by link).
+    query: dict = {"status": {"$ne": "cancelled"}}
     if category and category != "all":
         query["category"] = category
     docs = await db.events.find(query, {"_id": 0}).to_list(1000)
-    return [with_live_count(d) for d in docs]
+    ids = [d["id"] for d in docs]
+    # "Trending" uses real activity only: check-ins + saves.
+    checkins = await counts_by_event(db.checkins, {"event_id": {"$in": ids}})
+    saves = await counts_by_event(db.saves, {"event_id": {"$in": ids}})
+    for d in docs:
+        d["trend_score"] = checkins.get(d["id"], 0) + saves.get(d["id"], 0)
+    return [with_live_count(d) for d in await attach_hosts(docs)]
 
 
 @api_router.get("/events/{event_id}")
@@ -281,7 +303,7 @@ async def get_event(event_id: str):
     doc = await db.events.find_one({"id": event_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Event not found")
-    return with_live_count(doc)
+    return with_live_count((await attach_hosts([doc]))[0])
 
 
 OFFER_MAX_LEN = 80

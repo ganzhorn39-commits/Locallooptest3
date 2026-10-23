@@ -91,7 +91,7 @@ export default function ChatsScreen() {
         <Text style={[styles.title, { color: colors.onSurface }]}>{t("chats_title")}</Text>
       </View>
 
-      <KeyboardAwareScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 90, gap: 12 }} keyboardShouldPersistTaps="handled" bottomOffset={20}>
+      <KeyboardAwareScrollView contentContainerStyle={{ padding: 16, paddingBottom: 24, gap: 12 }} keyboardShouldPersistTaps="handled" bottomOffset={20}>
         <Text style={[styles.section, { color: colors.onSurfaceTertiary }]}>{t("event_chats")}</Text>
         {loading ? (
           <ActivityIndicator color={colors.brand} style={{ marginTop: 10 }} />

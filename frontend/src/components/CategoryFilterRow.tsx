@@ -17,6 +17,8 @@ export default function CategoryFilterRow({ selected, onSelect }: Props) {
   const { t } = useI18n();
 
   const chips = [
+    // "trending" is a pseudo category: the screens show the busiest events (real check-ins + saves).
+    { key: "trending", label: t("trending_now"), icon: "flame", color: colors.error },
     { key: "all", label: t("cat_all"), icon: "sparkles", color: colors.brand },
     ...CATEGORIES.map((c) => ({ key: c.key, label: t(`cat_${c.key}`), icon: c.icon, color: c.color })),
   ];

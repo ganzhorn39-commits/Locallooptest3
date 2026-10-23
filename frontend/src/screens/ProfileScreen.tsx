@@ -90,7 +90,7 @@ export default function ProfileScreen({ showBack }: { showBack?: boolean }) {
         </Pressable>
       </View>
 
-      <KeyboardAwareScrollView contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 90 }]} bottomOffset={20} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollView contentContainerStyle={[styles.body, { paddingBottom: 32 }]} bottomOffset={20} keyboardShouldPersistTaps="handled">
         <View style={styles.avatarWrap}>
           <Pressable testID="change-photo" onPress={changePhoto} style={[styles.avatar, { backgroundColor: colors.surfaceTertiary, borderColor: colors.brand }]}>
             {picture ? <Image source={{ uri: picture }} style={styles.avatarImg} contentFit="cover" /> : <Ionicons name="person" size={44} color={colors.onSurfaceTertiary} />}

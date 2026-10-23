@@ -35,7 +35,7 @@ export function filterEvents(
       if (day < opts.dateStart || day > end) return false;
     }
     if (q) {
-      const hay = `${e.title} ${e.category} ${e.address} ${e.description}`.toLowerCase();
+      const hay = `${e.title} ${e.category} ${e.address} ${e.description} ${e.venue_name || ""} ${e.host_name || ""}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     if (quick.includes("today")) {
@@ -73,4 +73,13 @@ export function countdown(iso: string): string {
   if (hrs < 24) return `in ${hrs}h ${mins % 60}m`;
   const days = Math.floor(hrs / 24);
   return `in ${days}d ${hrs % 24}h`;
+}
+
+// "Gerade angesagt": real activity only (check-ins + saves, computed by the backend), busiest first.
+export function topTrending(events: EventItem[], n = 10): EventItem[] {
+  return events
+    .filter((e) => (e.trend_score || 0) > 0)
+    .sort((a, b) => (b.trend_score || 0) - (a.trend_score || 0)
+      || new Date(a.next_occurrence || a.start_time).getTime() - new Date(b.next_occurrence || b.start_time).getTime())
+    .slice(0, n);
 }
