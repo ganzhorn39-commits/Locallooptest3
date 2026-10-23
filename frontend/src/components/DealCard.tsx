@@ -8,13 +8,10 @@ import { useI18n } from "@/src/i18n";
 import { useAuth } from "@/src/auth/AuthContext";
 import { api, ApiError, Deal, EventItem } from "@/src/api/client";
 import { dealStatusText } from "@/src/utils/deals";
+import { isPast } from "@/src/utils/eventTime";
 
-const PAST_GRACE_MS = 12 * 3600 * 1000; // same rule as the backend: a one-off event is over 12h after its start
-
-function eventIsOver(event: EventItem): boolean {
-  if (event.status === "cancelled") return true;
-  return !event.is_recurring && new Date(event.start_time).getTime() < Date.now() - PAST_GRACE_MS;
-}
+// Same rule as the backend: deals of a one-off event can be claimed until 2 hours after its end.
+const eventIsOver = (event: EventItem) => isPast(event);
 
 /**
  * The business offer of an event ("10 % auf Kaffee"): attendees claim it once, the host sees how many are gone.

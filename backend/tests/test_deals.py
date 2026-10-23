@@ -163,9 +163,11 @@ class TestOffers:
         assert guests[3][0].post(f"{API}/events/{event_id}/deal").status_code in (403, 409)
 
     def test_past_event_offer_not_claimable(self, biz, guests):
-        r = _event(biz[0], f"TEST_PastDeal_{RUN}", start_time="2020-01-01T18:00:00+00:00", offer_title="Gratis Keks")
+        r = _event(biz[0], f"TEST_PastDeal_{RUN}", offer_title="Gratis Keks")
         eid = r.json()["id"]
         _checkin(guests[3][0], eid)
+        # events that are over can't be created or joined: move it into the past after the check-in
+        assert biz[0].patch(f"{API}/events/{eid}", json={"start_time": "2020-01-01T18:00:00+00:00"}).status_code == 200
         r = guests[3][0].post(f"{API}/events/{eid}/deal")
         assert r.status_code == 409 and "over" in r.text
 

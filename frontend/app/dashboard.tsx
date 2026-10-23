@@ -11,6 +11,7 @@ import { useAuth } from "@/src/auth/AuthContext";
 import { api, Dashboard, DashboardEvent, DashboardRequest } from "@/src/api/client";
 import { categoryMeta } from "@/src/constants/categories";
 import { getAge } from "@/src/utils/age";
+import { formatWhen } from "@/src/utils/eventTime";
 import GuestGate from "@/src/components/GuestGate";
 
 // Host overview: real check-ins, saves, ratings and open join requests for the events this account created.
@@ -82,10 +83,8 @@ export default function DashboardScreen() {
   };
 
   const when = (e: DashboardEvent) => {
-    if (e.is_recurring && e.recurrence_label) return e.recurrence_label;
-    const d = new Date(e.next_occurrence || e.start_time);
-    if (isNaN(d.getTime())) return "";
-    return `${d.toLocaleDateString(locale, { weekday: "short", day: "numeric", month: "short" })} · ${d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}`;
+    if (isNaN(new Date(e.next_occurrence || e.start_time).getTime())) return "";
+    return formatWhen(e as any, t, lang); // date + time (range); series: "Jede Woche · Fr · 20:00"
   };
 
   const title = isBiz ? t("dashboard_business") : t("dashboard_my_events");
@@ -285,6 +284,7 @@ export default function DashboardScreen() {
                         <Text style={[styles.rowTitle, { color: dimmed ? colors.onSurfaceTertiary : colors.onSurface, flexShrink: 1 }]} numberOfLines={1}>{e.title}</Text>
                         {e.phase === "cancelled" && <Badge text={t("cancelled_badge")} color={colors.error} />}
                         {e.phase === "past" && <Badge text={t("dash_past")} color={colors.onSurfaceTertiary} />}
+                        {e.is_live && e.phase === "upcoming" && <Badge text={t("live_now")} color="#FF3B30" />}
                       </View>
                       <Text style={[styles.rowSub, { color: colors.onSurfaceTertiary }]} numberOfLines={1}>{when(e)}</Text>
                       <View style={styles.metricRow}>

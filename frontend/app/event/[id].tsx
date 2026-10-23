@@ -10,14 +10,14 @@ import { useI18n } from "@/src/i18n";
 import { useAuth } from "@/src/auth/AuthContext";
 import { api, EventItem } from "@/src/api/client";
 import { categoryMeta } from "@/src/constants/categories";
-import { countdown } from "@/src/utils/filters";
+import { formatWhen, hasEnded, isLiveNow, whenLabel } from "@/src/utils/eventTime";
 import DealCard from "@/src/components/DealCard";
 import ActionSheet from "@/src/components/ActionSheet";
 import ReportSheet from "@/src/components/ReportSheet";
 
 export default function EventDetail() {
   const { colors } = useTheme();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { user, promptLogin } = useAuth();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -41,6 +41,8 @@ export default function EventDetail() {
   if (loading || !e) return <View style={[styles.container, { backgroundColor: colors.surface }]}><ActivityIndicator style={{ marginTop: 80 }} color={colors.brand} /></View>;
   const meta = categoryMeta(e.category);
   const cancelled = e.status === "cancelled";
+  const live = !cancelled && isLiveNow(e);
+  const over = !cancelled && hasEnded(e);
   const isHost = !!user && e.created_by === user.user_id;
   const canEdit = isHost && !cancelled;
   const shown = (people?.participants || []).slice(0, 6);
@@ -97,6 +99,7 @@ export default function EventDetail() {
             <View style={styles.pillRow}>
               <View style={[styles.catPill, { backgroundColor: meta.color }]}><Text style={styles.catPillText}>{meta.emoji} {t(`cat_${e.category}`)}</Text></View>
               {cancelled && <View style={[styles.catPill, { backgroundColor: colors.error }]}><Text style={styles.catPillText}>{t("cancelled_badge")}</Text></View>}
+              {live && <View testID="event-detail-live" style={[styles.catPill, { backgroundColor: "#FF3B30" }]}><Text style={styles.catPillText}>● {t("live_now")}</Text></View>}
             </View>
             <Text style={styles.title}>{e.title}</Text>
             {!!e.venue_name && <Text style={styles.venue}>{e.venue_name}</Text>}
@@ -110,6 +113,12 @@ export default function EventDetail() {
               <Text style={[styles.bannerText, { color: colors.error }]}>{t("event_cancelled_banner")}</Text>
             </View>
           )}
+          {over && (
+            <View testID="event-over-banner" style={[styles.banner, { borderColor: colors.borderStrong }]}>
+              <Ionicons name="time-outline" size={18} color={colors.onSurfaceTertiary} />
+              <Text style={[styles.bannerText, { color: colors.onSurfaceSecondary }]}>{t("event_over_banner")}</Text>
+            </View>
+          )}
           {!!e.host_name && (
             <Pressable testID="event-detail-host" onPress={() => router.push(`/user/${e.created_by}`)} style={styles.row}>
               <Ionicons name={e.host_is_business ? "briefcase" : "person-circle-outline"} size={18} color={colors.brand} />
@@ -117,7 +126,8 @@ export default function EventDetail() {
               {e.host_is_business && <Ionicons name="checkmark-circle" size={16} color={colors.brand} />}
             </Pressable>
           )}
-          <Row icon="time-outline" color={colors.brand} text={e.is_recurring && e.recurrence_label ? e.recurrence_label : countdown(e.next_occurrence || e.start_time)} colors={colors} />
+          <Row icon={e.is_recurring ? "repeat" : "calendar-outline"} color={colors.brand} text={formatWhen(e, t, lang)} colors={colors} testID="event-detail-when" />
+          {!cancelled && <Row icon={live ? "radio-outline" : "time-outline"} color={live ? colors.error : colors.brand} text={whenLabel(e, t, lang)} colors={colors} />}
           {!!e.address && <Row icon="location-outline" color={colors.brand} text={e.address} colors={colors} />}
           {!!e.capacity && e.capacity > 0 && <Row icon="people-outline" color={colors.brand} text={`${e.spots_taken || 0}/${e.capacity}`} colors={colors} />}
           {!!e.rating && e.rating > 0 && <Row icon="star" color="#FFD60A" text={`${e.rating.toFixed(1)} (${e.rating_count})`} colors={colors} />}
@@ -140,7 +150,7 @@ export default function EventDetail() {
             <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} style={{ marginLeft: "auto" }} />
           </Pressable>
 
-          {canEdit && (
+          {canEdit && !over && (
             <Pressable testID="event-detail-cancel" onPress={() => setConfirmCancel(true)} style={[styles.dangerOutline, { borderColor: colors.error }]}>
               <Ionicons name="close-circle-outline" size={20} color={colors.error} />
               <Text style={[styles.dangerOutlineText, { color: colors.error }]}>{t("cancel_event")}</Text>
@@ -188,9 +198,9 @@ export default function EventDetail() {
   );
 }
 
-function Row({ icon, text, color, colors }: any) {
+function Row({ icon, text, color, colors, testID }: any) {
   return (
-    <View style={styles.row}>
+    <View style={styles.row} testID={testID}>
       <Ionicons name={icon} size={18} color={color} />
       <Text style={[styles.rowText, { color: colors.onSurfaceSecondary }]}>{text}</Text>
     </View>

@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, Animated, Easing, Platform } from "react-native";
 import MapView, { Marker, Circle, PROVIDER_DEFAULT } from "react-native-maps";
+import Ionicons from "@react-native-vector-icons/ionicons";
 import { useTheme } from "@/src/theme/theme";
 import { categoryMeta } from "@/src/constants/categories";
 import type { EventItem } from "@/src/api/client";
 import { darkMapStyle } from "@/src/components/mapStyle";
+import { isLiveNow } from "@/src/utils/eventTime";
 
 type Props = {
   events: EventItem[];
@@ -13,31 +15,38 @@ type Props = {
   mapRef?: any;
   radiusKm?: number | null;
   userLoc?: { latitude: number; longitude: number } | null;
+  now?: number;
 };
 
-function Pin({ event, color, onPress }: { event: EventItem; color: string; onPress: () => void }) {
-  const scale = useRef(new Animated.Value(1)).current;
+// Pin with a pulsing ring while the event is running and a small shop badge for business events.
+function Pin({ event, color, live, badgeColor }: { event: EventItem; color: string; live: boolean; badgeColor: string }) {
+  const [scale] = useState(() => new Animated.Value(1));
   useEffect(() => {
-    if (!event.is_hot) return;
+    if (!live) return;
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(scale, { toValue: 1.6, duration: 1200, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+        Animated.timing(scale, { toValue: 1.7, duration: 1400, easing: Easing.out(Easing.ease), useNativeDriver: true }),
         Animated.timing(scale, { toValue: 1, duration: 0, useNativeDriver: true }),
       ])
     );
     loop.start();
     return () => loop.stop();
-  }, [event.is_hot]);
+  }, [live, scale]);
 
   const meta = categoryMeta(event.category);
   return (
     <View style={styles.pinWrap}>
-      {event.is_hot && (
-        <Animated.View style={[styles.pulse, { backgroundColor: color, transform: [{ scale }], opacity: scale.interpolate({ inputRange: [1, 1.6], outputRange: [0.4, 0] }) }]} />
+      {live && (
+        <Animated.View style={[styles.pulse, { backgroundColor: color, transform: [{ scale }], opacity: scale.interpolate({ inputRange: [1, 1.7], outputRange: [0.5, 0] }) }]} />
       )}
-      <View style={[styles.pin, { backgroundColor: color, shadowColor: color }]}>
+      <View style={[styles.pin, { backgroundColor: color, shadowColor: color }, event.host_is_business && { borderColor: badgeColor }]}>
         <Text style={styles.emoji}>{event.emoji || meta.emoji}</Text>
       </View>
+      {event.host_is_business && (
+        <View style={[styles.bizBadge, { backgroundColor: badgeColor }]}>
+          <Ionicons name="storefront" size={9} color="#FFFFFF" />
+        </View>
+      )}
       <View style={[styles.pinTip, { borderTopColor: color }]} />
     </View>
   );
@@ -63,15 +72,15 @@ function clusterEvents(events: EventItem[], region: any): Cluster[] {
   });
 }
 
-export default function MapCanvas({ events, region, onSelect, mapRef, radiusKm, userLoc }: Props) {
+export default function MapCanvas({ events, region, onSelect, mapRef, radiusKm, userLoc, now }: Props) {
   const { colors, isDark } = useTheme();
   const internalRef = useRef<MapView>(null);
   const ref = mapRef || internalRef;
-  const [curRegion, setCurRegion] = useState(region);
+  // The region the user panned/zoomed to; a new `region` from the parent (recenter, surprise) replaces it.
+  const [moved, setMoved] = useState<{ from: any; region: any } | null>(null);
+  const curRegion = moved && moved.from === region ? moved.region : region;
 
-  useEffect(() => { setCurRegion(region); }, [region]);
-
-  const clusters = useMemo(() => clusterEvents(events, curRegion || region), [events, curRegion]);
+  const clusters = useMemo(() => clusterEvents(events, curRegion), [events, curRegion]);
   const circleCenter = userLoc || (region ? { latitude: region.latitude, longitude: region.longitude } : null);
 
   const zoomTo = (c: Cluster) => {
@@ -88,7 +97,7 @@ export default function MapCanvas({ events, region, onSelect, mapRef, radiusKm, 
       showsUserLocation
       showsMyLocationButton={false}
       customMapStyle={isDark ? darkMapStyle : []}
-      onRegionChangeComplete={setCurRegion}
+      onRegionChangeComplete={(r) => setMoved({ from: region, region: r })}
       // keeps the Apple/Google legal logos above the floating "Überrasch mich" button
       mapPadding={{ top: 0, right: 0, bottom: 72, left: 0 }}
       testID="map-view"
@@ -106,9 +115,12 @@ export default function MapCanvas({ events, region, onSelect, mapRef, radiusKm, 
         if (c.items.length === 1) {
           const e = c.items[0];
           const meta = categoryMeta(e.category);
+          const live = isLiveNow(e, now);
           return (
-            <Marker key={e.id} coordinate={{ latitude: e.pin_latitude ?? e.latitude, longitude: e.pin_longitude ?? e.longitude }} onPress={() => onSelect(e)} tracksViewChanges={Platform.OS === "ios" ? false : undefined}>
-              <Pin event={e} color={meta.color} onPress={() => onSelect(e)} />
+            // iOS only animates marker views that are tracked: keep that to the few live pins.
+            <Marker key={`${e.id}-${live ? "live" : "idle"}`} coordinate={{ latitude: e.pin_latitude ?? e.latitude, longitude: e.pin_longitude ?? e.longitude }}
+              onPress={() => onSelect(e)} tracksViewChanges={Platform.OS === "ios" ? live : undefined}>
+              <Pin event={e} color={meta.color} live={live} badgeColor={colors.accent} />
             </Marker>
           );
         }
@@ -132,6 +144,10 @@ const styles = StyleSheet.create({
     width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center",
     borderWidth: 2, borderColor: "#FFFFFF",
     shadowOpacity: 0.9, shadowRadius: 8, shadowOffset: { width: 0, height: 0 }, elevation: 6,
+  },
+  bizBadge: {
+    position: "absolute", top: 6, right: 6, width: 18, height: 18, borderRadius: 9, alignItems: "center", justifyContent: "center",
+    borderWidth: 1.5, borderColor: "#FFFFFF",
   },
   pinTip: { width: 0, height: 0, borderLeftWidth: 5, borderRightWidth: 5, borderTopWidth: 7, borderLeftColor: "transparent", borderRightColor: "transparent", marginTop: -1 },
   cluster: {

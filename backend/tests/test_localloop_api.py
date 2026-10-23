@@ -1,6 +1,7 @@
 """Backend API tests for LocalLoop - events + auth flows."""
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 import pytest
 import requests
 
@@ -105,7 +106,7 @@ class TestEvents:
         title = f"TEST_Event_{uuid.uuid4().hex[:6]}"
         payload = {
             "title": title, "category": "culture",
-            "start_time": "2026-02-15T20:00:00Z",
+            "start_time": (datetime.now(timezone.utc) + timedelta(days=3)).isoformat(),  # events that are over are refused
             "description": "Test event", "image_url": "",
             "instagram": "", "website": "", "tickets_url": "",
             "latitude": 37.77, "longitude": -122.42, "address": "Test",

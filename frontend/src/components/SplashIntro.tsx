@@ -1,13 +1,15 @@
-import React, { useEffect, useRef } from "react";
-import { View, Text, StyleSheet, Animated, Easing } from "react-native";
+import React, { useEffect, useState } from "react";
+import { View, StyleSheet, Animated, Easing } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import Ionicons from "@react-native-vector-icons/ionicons";
+import { useI18n } from "@/src/i18n";
 
 export default function SplashIntro({ onDone }: { onDone: () => void }) {
-  const scale = useRef(new Animated.Value(0.7)).current;
-  const opacity = useRef(new Animated.Value(0)).current;
-  const slogan = useRef(new Animated.Value(0)).current;
-  const pulse = useRef(new Animated.Value(1)).current;
+  const { t } = useI18n();
+  const [scale] = useState(() => new Animated.Value(0.7));
+  const [opacity] = useState(() => new Animated.Value(0));
+  const [slogan] = useState(() => new Animated.Value(0));
+  const [pulse] = useState(() => new Animated.Value(1));
 
   useEffect(() => {
     Animated.sequence([
@@ -25,6 +27,8 @@ export default function SplashIntro({ onDone }: { onDone: () => void }) {
         Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
       ])
     ).start();
+    // runs once: the parent passes a new onDone on every render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -36,7 +40,7 @@ export default function SplashIntro({ onDone }: { onDone: () => void }) {
         </View>
       </Animated.View>
       <Animated.Text style={[styles.wordmark, { opacity }]}>LocalLoop</Animated.Text>
-      <Animated.Text style={[styles.slogan, { opacity: slogan }]}>The city's pulse, on your map.</Animated.Text>
+      <Animated.Text style={[styles.slogan, { opacity: slogan }]}>{t("splash_slogan")}</Animated.Text>
     </LinearGradient>
   );
 }

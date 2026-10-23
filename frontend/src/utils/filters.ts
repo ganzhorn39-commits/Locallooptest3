@@ -1,16 +1,20 @@
 import type { EventItem } from "@/src/api/client";
 import { isAgeRestricted } from "@/src/constants/categories";
+import { DateFilter, eventWindow, hasEnded, isLiveNow, matchesDate } from "@/src/utils/eventTime";
 
-export type QuickKey = "today" | "free" | "outdoor" | "near";
+// Quick chips under the search field. Date ("Heute") and distance live in the filter sheet.
+export type QuickKey = "live" | "free" | "deals" | "outdoor";
 
-export const QUICK_FILTERS: { key: QuickKey; label: string; icon: string }[] = [
-  { key: "today", label: "Today", icon: "today" },
-  { key: "free", label: "Free Entry", icon: "pricetag" },
-  { key: "outdoor", label: "Outdoor", icon: "leaf" },
-  { key: "near", label: "Near Me", icon: "navigate" },
+export const QUICK_FILTERS: { key: QuickKey; icon: string }[] = [
+  { key: "live", icon: "radio-outline" },
+  { key: "free", icon: "pricetag" },
+  { key: "deals", icon: "gift-outline" },
+  { key: "outdoor", icon: "leaf" },
 ];
 
-function haversideKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
+export type HostFilter = "all" | "business";
+
+function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
   const R = 6371;
   const dLat = ((b.lat - a.lat) * Math.PI) / 180;
   const dLng = ((b.lng - a.lng) * Math.PI) / 180;
@@ -20,41 +24,35 @@ function haversideKm(a: { lat: number; lng: number }, b: { lat: number; lng: num
   return 2 * R * Math.asin(Math.sqrt(x));
 }
 
+const dealLeft = (e: EventItem) => !!e.offer_title && (!e.offer_limit || (e.offer_claimed || 0) < e.offer_limit);
+
 export function filterEvents(
   events: EventItem[],
-  opts: { query?: string; category?: string; quick?: QuickKey[]; userLoc?: { latitude: number; longitude: number } | null; radiusKm?: number | null; hideRestricted?: boolean; dateStart?: string | null; dateEnd?: string | null }
+  opts: {
+    query?: string; category?: string; quick?: QuickKey[];
+    userLoc?: { latitude: number; longitude: number } | null; radiusKm?: number | null;
+    hideRestricted?: boolean; date?: DateFilter; host?: HostFilter; now?: number;
+  }
 ): EventItem[] {
   const q = (opts.query || "").trim().toLowerCase();
   const quick = opts.quick || [];
+  const now = opts.now ?? Date.now();
   return events.filter((e) => {
+    if (e.status === "cancelled") return false;
     if (opts.hideRestricted && isAgeRestricted(e.category)) return false;
     if (opts.category && opts.category !== "all" && e.category !== opts.category) return false;
-    if (opts.dateStart) {
-      const day = new Date(e.start_time).toISOString().slice(0, 10);
-      const end = opts.dateEnd || opts.dateStart;
-      if (day < opts.dateStart || day > end) return false;
-    }
+    if (opts.host === "business" && !e.host_is_business) return false;
+    if (opts.date && !matchesDate(e, opts.date, now)) return false;
     if (q) {
       const hay = `${e.title} ${e.category} ${e.address} ${e.description} ${e.venue_name || ""} ${e.host_name || ""}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
-    if (quick.includes("today")) {
-      const d = new Date(e.start_time);
-      const now = new Date();
-      if (d.toDateString() !== now.toDateString()) return false;
-    }
+    if (quick.includes("live") && !isLiveNow(e, now)) return false;
     if (quick.includes("free") && e.tickets_url) return false;
+    if (quick.includes("deals") && !dealLeft(e)) return false;
     if (quick.includes("outdoor") && !(e.category === "outdoor" || e.category === "sports")) return false;
-    if (quick.includes("near")) {
-      if (!opts.userLoc) return false;
-      const km = haversideKm(
-        { lat: opts.userLoc.latitude, lng: opts.userLoc.longitude },
-        { lat: e.latitude, lng: e.longitude }
-      );
-      if (km > 5) return false;
-    }
     if (opts.radiusKm && opts.userLoc) {
-      const km = haversideKm(
+      const km = haversineKm(
         { lat: opts.userLoc.latitude, lng: opts.userLoc.longitude },
         { lat: e.latitude, lng: e.longitude }
       );
@@ -64,15 +62,10 @@ export function filterEvents(
   });
 }
 
-export function countdown(iso: string): string {
-  const diff = new Date(iso).getTime() - Date.now();
-  if (diff <= 0) return "Happening now";
-  const mins = Math.floor(diff / 60000);
-  if (mins < 60) return `in ${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `in ${hrs}h ${mins % 60}m`;
-  const days = Math.floor(hrs / 24);
-  return `in ${days}d ${hrs % 24}h`;
+// Running events first, then the coming ones by start; events that just ended (still listed for 2 h) last.
+export function sortByTime(events: EventItem[], now = Date.now()): EventItem[] {
+  const rank = (e: EventItem) => (isLiveNow(e, now) ? 0 : hasEnded(e, now) ? 2 : 1);
+  return [...events].sort((a, b) => rank(a) - rank(b) || eventWindow(a, now).start - eventWindow(b, now).start);
 }
 
 // "Gerade angesagt": real activity only (check-ins + saves, computed by the backend), busiest first.

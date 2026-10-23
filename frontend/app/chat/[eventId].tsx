@@ -9,7 +9,7 @@ import { useRouter, useLocalSearchParams } from "expo-router";
 import { useTheme } from "@/src/theme/theme";
 import { useAuth } from "@/src/auth/AuthContext";
 import { useI18n } from "@/src/i18n";
-import { api } from "@/src/api/client";
+import { api, errorCode } from "@/src/api/client";
 import ActionSheet from "@/src/components/ActionSheet";
 import ReportSheet from "@/src/components/ReportSheet";
 import GuidelinesModal from "@/src/components/GuidelinesModal";
@@ -35,6 +35,9 @@ export default function Chat() {
   const [confirmBlock, setConfirmBlock] = useState<Message | null>(null);
   const [reportMsg, setReportMsg] = useState<Message | null>(null);
   const [showGuidelines, setShowGuidelines] = useState(false);
+  // Chats of events that are over or cancelled stay readable but take no new messages.
+  const [archived, setArchived] = useState<"ended" | "cancelled" | null>(null);
+  const [ready, setReady] = useState(false); // event loaded (title, archived state)
   const listRef = useRef<FlatList>(null);
   const needsGuidelines = !!user && !user.terms_accepted_at;
 
@@ -48,7 +51,13 @@ export default function Chat() {
   useEffect(() => {
     let alive = true;
     Promise.all([api.getEvent(eventId), api.participants(eventId)])
-      .then(([ev, pt]) => { if (alive) { setTitle(ev.title); setParticipants(pt.count); } })
+      .then(([ev, pt]) => {
+        if (!alive) return;
+        setTitle(ev.title);
+        setParticipants(pt.count);
+        setArchived(ev.status === "cancelled" || ev.phase === "cancelled" ? "cancelled" : ev.phase === "past" ? "ended" : null);
+        setReady(true);
+      })
       .catch(() => {});
     const poll = () => api.getMessages(eventId).then((m) => { if (alive) setMessages(m); }).catch(() => {});
     poll();
@@ -56,12 +65,12 @@ export default function Chat() {
     return () => { alive = false; clearInterval(timer); };
   }, [eventId]);
 
-  // Accounts from before the registration checkboxes accept the guidelines here once.
+  // Accounts from before the registration checkboxes accept the guidelines here once (not in read-only chats).
   useEffect(() => {
-    if (!needsGuidelines) return;
+    if (!needsGuidelines || !ready || archived) return;
     const timer = setTimeout(() => setShowGuidelines(true), 400);
     return () => clearTimeout(timer);
-  }, [needsGuidelines]);
+  }, [needsGuidelines, ready, archived]);
 
   const send = async () => {
     if (!user) { promptLogin(); return; }
@@ -73,9 +82,16 @@ export default function Chat() {
       const msg = await api.sendMessage(eventId, body);
       setMessages((prev) => [...prev, msg]);
       if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    } catch {
+    } catch (e) {
       setText(body);
+      if (errorCode(e) === "chat_archived") setArchived("ended"); // the event ended while the chat was open
     }
+  };
+
+  const removeChat = async () => {
+    try { await api.hideChat(eventId); } catch {}
+    if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    router.back();
   };
 
   const openProfile = (m: Message) => router.push(`/user/${m.user_id}`);
@@ -150,12 +166,26 @@ export default function Chat() {
           testID="chat-messages"
           ListEmptyComponent={<Text style={[styles.empty, { color: colors.onSurfaceTertiary }]}>{t("say_hi")}</Text>}
         />
-        {needsGuidelines && (
+        {needsGuidelines && !archived && (
           <Pressable testID="guidelines-banner" onPress={() => setShowGuidelines(true)} style={[styles.banner, { backgroundColor: colors.brandTertiary }]}>
             <Ionicons name="shield-checkmark-outline" size={16} color={colors.onBrandTertiary} />
             <Text style={[styles.bannerText, { color: colors.onBrandTertiary }]}>{t("guidelines_required")}</Text>
           </Pressable>
         )}
+        {archived ? (
+          <View testID="chat-archived" style={[styles.archived, { paddingBottom: insets.bottom + 12, backgroundColor: colors.surfaceSecondary, borderTopColor: colors.border }]}>
+            <View style={styles.archivedRow}>
+              <Ionicons name={archived === "cancelled" ? "close-circle-outline" : "archive-outline"} size={20} color={archived === "cancelled" ? colors.error : colors.onSurfaceTertiary} />
+              <Text style={[styles.archivedText, { color: colors.onSurfaceSecondary }]}>
+                {archived === "cancelled" ? t("chat_archived_cancelled") : t("chat_archived_ended")}
+              </Text>
+            </View>
+            <Pressable testID="chat-archived-remove" onPress={removeChat} style={[styles.archivedBtn, { borderColor: colors.error }]}>
+              <Ionicons name="trash-outline" size={16} color={colors.error} />
+              <Text style={[styles.archivedBtnText, { color: colors.error }]}>{t("chat_remove")}</Text>
+            </Pressable>
+          </View>
+        ) : (
         <View style={[styles.composer, { paddingBottom: insets.bottom + 10, backgroundColor: colors.surface, borderTopColor: colors.border }]}>
           <TextInput
             testID="chat-input"
@@ -172,6 +202,7 @@ export default function Chat() {
             <Ionicons name="arrow-up" size={22} color={colors.onBrand} />
           </Pressable>
         </View>
+        )}
       </KeyboardAvoidingView>
 
       <ActionSheet
@@ -220,4 +251,9 @@ const styles = StyleSheet.create({
   composer: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 10, borderTopWidth: 1 },
   input: { flex: 1, height: 48, borderRadius: 24, borderWidth: 1, paddingHorizontal: 16, fontSize: 15 },
   sendBtn: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center" },
+  archived: { paddingHorizontal: 16, paddingTop: 12, borderTopWidth: 1, gap: 10 },
+  archivedRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  archivedText: { flex: 1, fontSize: 13, lineHeight: 18, fontWeight: "600" },
+  archivedBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, height: 40, borderRadius: 12, borderWidth: 1.5 },
+  archivedBtnText: { fontSize: 14, fontWeight: "800" },
 });

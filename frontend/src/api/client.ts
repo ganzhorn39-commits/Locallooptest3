@@ -31,6 +31,12 @@ export type AppNotification = {
 export type ReportTarget = "user" | "event" | "message";
 export type ReportReason = "spam" | "harassment" | "hate" | "sexual" | "violence" | "fake" | "other";
 
+// Structured errors carry a machine-readable code, e.g. { code: "event_over", message }.
+export function errorCode(e: unknown): string | null {
+  const d = (e as ApiError)?.detail;
+  return d && typeof d === "object" && typeof d.code === "string" ? d.code : null;
+}
+
 // The backend rejects texts with blacklisted words: { code: "profanity", field, words }.
 export function profanityWords(e: unknown): string[] | null {
   const d = (e as ApiError)?.detail;
@@ -71,11 +77,15 @@ export type Deal = {
 
 export type RedeemResult = Deal & { guest_name: string; guest_picture?: string };
 
+// upcoming → live → ended (still listed for 2 h) → past (gone from map and lists); or cancelled
+export type EventPhase = "upcoming" | "live" | "ended" | "past" | "cancelled";
+
 export type EventItem = {
   id: string;
   title: string;
   category: string;
   start_time: string;
+  end_time?: string; // optional; without it the event counts as 3 hours long
   description: string;
   image_url: string;
   instagram: string;
@@ -103,7 +113,11 @@ export type EventItem = {
   recurrence_freq?: string;
   recurrence_days?: number[];
   recurrence_label?: string;
-  next_occurrence?: string;
+  next_occurrence?: string; // recurring: the running or the next date
+  ends_at?: string | null; // end of that occurrence
+  occurrences?: string[]; // recurring: running + coming dates (≈ 2 months), used by the date filter
+  phase?: EventPhase;
+  is_live?: boolean;
   join_approval?: "auto" | "manual";
   age_restricted?: boolean;
   status?: "active" | "cancelled";
@@ -127,8 +141,12 @@ export type DashboardEvent = {
   next_occurrence: string;
   is_recurring: boolean;
   recurrence_label?: string;
+  recurrence_freq?: string;
+  recurrence_days?: number[];
+  end_time?: string;
   status: "active" | "cancelled";
   phase: "upcoming" | "past" | "cancelled";
+  is_live?: boolean;
   capacity: number;
   join_approval: "auto" | "manual";
   rating: number;
@@ -141,6 +159,29 @@ export type DashboardEvent = {
   offer_limit: number;
   deals_claimed: number;
   deals_redeemed: number;
+};
+
+// One row of the Chats tab (GET /my/chats). Archived chats (event over / cancelled) are read-only.
+export type ChatSummary = {
+  event_id: string;
+  title: string;
+  category: string;
+  emoji?: string;
+  image_url?: string;
+  role: "host" | "guest";
+  state: "active" | "ended" | "cancelled";
+  is_live: boolean;
+  is_recurring: boolean;
+  start_time: string;
+  next_occurrence?: string | null;
+  ends_at?: string | null;
+  cancelled_at?: string | null;
+  members: number;
+  unread: number;
+  last_message: {
+    user_id: string; user_name: string; text: string; system: boolean; system_key?: string | null; created_at: string;
+  } | null;
+  last_activity: string;
 };
 
 export type DashboardRequest = {
@@ -211,6 +252,8 @@ export const api = {
   saveStatus: (id: string): Promise<{ saved: boolean }> => req(`/events/${id}/save-status`),
   mySaved: (): Promise<EventItem[]> => req(`/my/saved`),
   myAttending: (): Promise<EventItem[]> => req(`/my/attending`),
+  myChats: (): Promise<ChatSummary[]> => req(`/my/chats`),
+  hideChat: (eventId: string) => req(`/chats/${eventId}/hide`, { method: "POST" }),
   myDashboard: (): Promise<Dashboard> => req(`/my/dashboard?tz_offset=${new Date().getTimezoneOffset()}`),
 
   // Deals (business offers)

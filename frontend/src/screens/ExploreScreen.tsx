@@ -8,13 +8,16 @@ import { useTheme } from "@/src/theme/theme";
 import { useAuth } from "@/src/auth/AuthContext";
 import { useI18n } from "@/src/i18n";
 import { api, EventItem } from "@/src/api/client";
-import { filterEvents, QuickKey, topTrending } from "@/src/utils/filters";
+import { filterEvents, QuickKey, sortByTime, topTrending } from "@/src/utils/filters";
 import { isMinor } from "@/src/utils/age";
 import { useUserLocation } from "@/src/utils/useUserLocation";
+import { useNow } from "@/src/hooks/use-now";
+import { useFilters } from "@/src/filters/FilterContext";
 import EventCard from "@/src/components/EventCard";
 import SearchFilterBar from "@/src/components/SearchFilterBar";
 import CategoryFilterRow from "@/src/components/CategoryFilterRow";
-import RadiusFilter from "@/src/components/RadiusFilter";
+import FilterButton from "@/src/components/FilterButton";
+import FilterSheet from "@/src/components/FilterSheet";
 import EventSheet from "@/src/components/EventSheet";
 import NotificationBell from "@/src/components/NotificationBell";
 
@@ -33,9 +36,10 @@ export default function ExploreScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<EventItem | null>(null);
   const [checkedIn, setCheckedIn] = useState(false);
-  const [radiusKm, setRadiusKm] = useState<number | null>(null);
-  const [showRadius, setShowRadius] = useState(false);
-  const { userLoc } = useUserLocation();
+  const [showFilters, setShowFilters] = useState(false);
+  const { userLoc, requestLocation } = useUserLocation();
+  const { date, radiusKm, host, activeCount, reset } = useFilters();
+  const now = useNow();
 
   const sheetRef = useRef<BottomSheet>(null);
   const snapPoints = useMemo(() => ["36%", "90%"], []);
@@ -59,11 +63,10 @@ export default function ExploreScreen() {
   const filtered = useMemo(() => {
     const base = filterEvents(events, {
       query, category: trendingMode ? "all" : category, quick, userLoc, radiusKm, hideRestricted: isMinor(user?.birthdate),
+      date, host, now,
     });
-    return trendingMode
-      ? topTrending(base, 20)
-      : base.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
-  }, [events, query, category, trendingMode, quick, userLoc, radiusKm, user]);
+    return trendingMode ? topTrending(base, 20) : sortByTime(base, now);
+  }, [events, query, category, trendingMode, quick, userLoc, radiusKm, user, date, host, now]);
 
   const openEvent = useCallback(async (e: EventItem) => {
     setSelected(e);
@@ -88,6 +91,8 @@ export default function ExploreScreen() {
   };
 
   const toggleQuick = (k: QuickKey) => setQuick((q) => (q.includes(k) ? q.filter((x) => x !== k) : [...q, k]));
+  const anyFilter = activeCount > 0 || quick.length > 0 || !!query || category !== "all";
+  const resetAll = () => { reset(); setQuick([]); setQuery(""); setCategory("all"); };
 
   const TrendsHeader = trendingMode ? (
     <View style={styles.trendsHead} testID="trends-section">
@@ -104,23 +109,11 @@ export default function ExploreScreen() {
           <Text style={[styles.title, { color: colors.onSurface }]}>{t("explore_title")}</Text>
           <NotificationBell />
         </View>
-        <SearchFilterBar query={query} onQuery={setQuery} quick={quick} onToggleQuick={toggleQuick} />
+        <SearchFilterBar query={query} onQuery={setQuery} quick={quick} onToggleQuick={toggleQuick}
+          accessory={<FilterButton count={activeCount} onPress={() => setShowFilters(true)} />} />
         <View style={{ marginHorizontal: -16, marginTop: 4 }}>
           <CategoryFilterRow selected={category} onSelect={setCategory} />
         </View>
-        <View style={styles.radiusRow}>
-          <Pressable
-            testID="radius-toggle"
-            onPress={() => setShowRadius((s) => !s)}
-            style={[styles.radiusPill, { backgroundColor: showRadius || radiusKm !== null ? colors.brand : colors.surfaceTertiary, borderColor: showRadius || radiusKm !== null ? colors.brand : colors.border }]}
-          >
-            <Ionicons name="navigate" size={14} color={showRadius || radiusKm !== null ? colors.onBrand : colors.onSurface} />
-            <Text style={[styles.radiusPillText, { color: showRadius || radiusKm !== null ? colors.onBrand : colors.onSurface }]}>
-              {radiusKm === null ? t("radius") : `${radiusKm} ${t("km_unit")}`}
-            </Text>
-          </Pressable>
-        </View>
-        {showRadius && <RadiusFilter value={radiusKm} onChange={setRadiusKm} />}
       </View>
 
       {loading ? (
@@ -135,7 +128,18 @@ export default function ExploreScreen() {
           contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
           ListHeaderComponent={TrendsHeader}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.brand} />}
-          ListEmptyComponent={<Text style={[styles.empty, { color: colors.onSurfaceTertiary }]}>{trendingMode ? t("trending_empty") : t("no_match")}</Text>}
+          ListEmptyComponent={
+            <View style={styles.emptyWrap} testID="explore-empty">
+              <Ionicons name={trendingMode ? "flame-outline" : "search"} size={28} color={colors.onSurfaceTertiary} />
+              <Text style={[styles.empty, { color: colors.onSurfaceSecondary }]}>{trendingMode ? t("trending_empty") : t("map_empty")}</Text>
+              {anyFilter && (
+                <Pressable testID="explore-empty-reset" onPress={resetAll} style={[styles.emptyBtn, { borderColor: colors.brand }]}>
+                  <Ionicons name="refresh" size={16} color={colors.brand} />
+                  <Text style={[styles.emptyBtnText, { color: colors.brand }]}>{t("filters_reset_all")}</Text>
+                </Pressable>
+              )}
+            </View>
+          }
           testID="explore-list"
         />
       )}
@@ -144,6 +148,15 @@ export default function ExploreScreen() {
         handleIndicatorStyle={{ backgroundColor: colors.borderStrong }} backgroundStyle={{ backgroundColor: colors.surfaceSecondary }}>
         {selected && <EventSheet event={selected} checkedIn={checkedIn} onCheckin={onCheckin} bottomInset={0} userLoc={userLoc} />}
       </BottomSheet>
+
+      <FilterSheet
+        visible={showFilters}
+        onClose={() => setShowFilters(false)}
+        events={events}
+        resultCount={filtered.length}
+        hasLocation={!!userLoc}
+        onRequestLocation={requestLocation}
+      />
     </View>
   );
 }
@@ -153,11 +166,11 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 16, paddingBottom: 8, borderBottomWidth: 1, gap: 10 },
   title: { fontSize: 28, fontWeight: "900", letterSpacing: -0.5 },
   titleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  radiusRow: { flexDirection: "row" },
-  radiusPill: { flexDirection: "row", alignItems: "center", gap: 6, height: 32, paddingHorizontal: 14, borderRadius: 16, borderWidth: 1 },
-  radiusPillText: { fontSize: 13, fontWeight: "800" },
   trendsHead: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 12, flexWrap: "wrap" },
   trendsTitle: { fontSize: 17, fontWeight: "800" },
   trendsHint: { fontSize: 13 },
-  empty: { textAlign: "center", marginTop: 50, fontSize: 15, fontStyle: "italic" },
+  emptyWrap: { alignItems: "center", gap: 12, marginTop: 50, paddingHorizontal: 24 },
+  empty: { textAlign: "center", fontSize: 15, lineHeight: 21, fontWeight: "600" },
+  emptyBtn: { flexDirection: "row", alignItems: "center", gap: 6, height: 40, paddingHorizontal: 16, borderRadius: 12, borderWidth: 1.5 },
+  emptyBtnText: { fontSize: 14, fontWeight: "800" },
 });

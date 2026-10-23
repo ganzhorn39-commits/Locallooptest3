@@ -4,8 +4,9 @@ import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { useTheme } from "@/src/theme/theme";
+import { useI18n } from "@/src/i18n";
 import { categoryMeta } from "@/src/constants/categories";
-import { countdown } from "@/src/utils/filters";
+import { hasEnded, isLiveNow, recurrenceText, whenLabel } from "@/src/utils/eventTime";
 import type { EventItem } from "@/src/api/client";
 
 export default function EventCard({
@@ -20,8 +21,13 @@ export default function EventCard({
   onToggleSave: () => void;
 }) {
   const { colors } = useTheme();
+  const { t, lang } = useI18n();
   const meta = categoryMeta(event.category);
   const catColor = meta.color;
+  const live = isLiveNow(event);
+  const over = hasEnded(event);
+  const timeColor = live ? colors.error : over ? colors.onSurfaceTertiary : colors.brand;
+  const when = live || !event.is_recurring || !event.recurrence_days?.length ? whenLabel(event, t, lang) : recurrenceText(event, t, lang);
 
   return (
     <Pressable testID={`event-card-${event.id}`} onPress={onPress} style={[styles.card, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
@@ -39,10 +45,22 @@ export default function EventCard({
         <Pressable testID={`save-card-${event.id}`} onPress={onToggleSave} hitSlop={10} style={styles.saveBtn}>
           <Ionicons name={saved ? "bookmark" : "bookmark-outline"} size={20} color="#FFFFFF" />
         </Pressable>
-        <View style={styles.liveTag}>
-          <View style={styles.liveDot} />
-          <Text style={styles.liveText}>{event.live_count}</Text>
-        </View>
+        {live ? (
+          <View style={[styles.liveTag, { backgroundColor: "#FF3B30" }]} testID={`event-card-live-${event.id}`}>
+            <View style={[styles.liveDot, { backgroundColor: "#FFFFFF" }]} />
+            <Text style={styles.liveText}>{t("live_badge").toUpperCase()}</Text>
+          </View>
+        ) : (
+          <View style={styles.liveTag}>
+            <Ionicons name="people" size={13} color="#FFFFFF" />
+            <Text style={styles.liveText}>{event.live_count}</Text>
+          </View>
+        )}
+        {event.host_is_business && (
+          <View style={[styles.bizTag, { backgroundColor: colors.accent }]}>
+            <Ionicons name="storefront" size={11} color={colors.onAccent} />
+          </View>
+        )}
       </View>
       <View style={styles.info}>
         <Text style={[styles.title, { color: colors.onSurface }]} numberOfLines={1}>{event.title}</Text>
@@ -59,10 +77,8 @@ export default function EventCard({
           </View>
         )}
         <View style={styles.metaRow}>
-          <Ionicons name={event.is_recurring ? "repeat" : "time-outline"} size={14} color={colors.brand} />
-          <Text style={[styles.countdown, { color: colors.brand }]} numberOfLines={1}>
-            {event.is_recurring && event.recurrence_label ? event.recurrence_label : countdown(event.next_occurrence || event.start_time)}
-          </Text>
+          <Ionicons name={live ? "radio-outline" : event.is_recurring ? "repeat" : "time-outline"} size={14} color={timeColor} />
+          <Text style={[styles.countdown, { color: timeColor, flexShrink: 1 }]} numberOfLines={1}>{when}</Text>
           {!!event.capacity && event.capacity > 0 && (
             <Text style={[styles.spots, { color: (event.spots_taken || 0) >= event.capacity ? colors.error : colors.onSurfaceTertiary }]} numberOfLines={1}>
               · {(event.spots_taken || 0) >= event.capacity ? "Sold Out" : `${event.spots_taken || 0}/${event.capacity}`}
@@ -83,6 +99,7 @@ const styles = StyleSheet.create({
   liveTag: { position: "absolute", bottom: 12, right: 12, flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "rgba(0,0,0,0.55)", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
   liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "#FF3B30" },
   liveText: { color: "#FFFFFF", fontSize: 13, fontWeight: "800" },
+  bizTag: { position: "absolute", bottom: 12, left: 12, width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   info: { padding: 14, gap: 6 },
   title: { fontSize: 17, fontWeight: "800", letterSpacing: -0.3 },
   venue: { fontSize: 13, fontWeight: "600" },

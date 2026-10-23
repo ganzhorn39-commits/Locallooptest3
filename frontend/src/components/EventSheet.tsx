@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform, Modal, TextInput, Share } from "react-native";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
@@ -13,8 +13,7 @@ import { useAuth } from "@/src/auth/AuthContext";
 import { categoryMeta } from "@/src/constants/categories";
 import { api, EventItem } from "@/src/api/client";
 import DealCard from "@/src/components/DealCard";
-
-import { countdown } from "@/src/utils/filters";
+import { formatWhen, hasEnded, isLiveNow, recurrenceText, whenLabel } from "@/src/utils/eventTime";
 
 type Props = {
   event: EventItem;
@@ -34,16 +33,6 @@ function distanceKm(a: { latitude: number; longitude: number }, b: { latitude: n
   return 2 * R * Math.asin(Math.sqrt(x));
 }
 
-function formatDate(iso: string) {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) +
-      " · " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  } catch {
-    return iso;
-  }
-}
-
 const openLink = async (url: string) => {
   if (!url) return;
   try { await WebBrowser.openBrowserAsync(url); } catch {}
@@ -51,7 +40,7 @@ const openLink = async (url: string) => {
 
 export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, userLoc }: Props) {
   const { colors } = useTheme();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { user, promptLogin } = useAuth();
   const router = useRouter();
   const meta = categoryMeta(event.category);
@@ -62,6 +51,8 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
   const capacity = event.capacity || 0;
   const taken = event.spots_taken || 0;
   const soldOut = capacity > 0 && taken >= capacity;
+  const live = isLiveNow(event);
+  const over = hasEnded(event); // still on the map for 2h after the end, but nobody can join any more
 
   const [participants, setParticipants] = useState(0);
   const [attendeeList, setAttendeeList] = useState<any[]>([]);
@@ -71,20 +62,21 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
   const [comment, setComment] = useState("");
   const [reviewMsg, setReviewMsg] = useState("");
   const [submittingReview, setSubmittingReview] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const reloadSocial = () => setReloadKey((k) => k + 1);
 
-  const loadSocial = useCallback(async () => {
-    try {
-      const pt = await api.participants(event.id);
+  // Attendees, saved state and reviews; reloaded after a check-in, a review or a failed save.
+  useEffect(() => {
+    let alive = true;
+    api.participants(event.id).then((pt) => {
+      if (!alive) return;
       setParticipants(pt.count);
       setAttendeeList(pt.participants || []);
-    } catch {}
-    try {
-      setSaved((await api.saveStatus(event.id)).saved);
-    } catch {}
-    try {
-      setReviews(await api.getReviews(event.id));
-    } catch {}
-  }, [event.id]);
+    }).catch(() => {});
+    api.saveStatus(event.id).then((r) => { if (alive) setSaved(r.saved); }).catch(() => {});
+    api.getReviews(event.id).then((r) => { if (alive) setReviews(r); }).catch(() => {});
+    return () => { alive = false; };
+  }, [event.id, checkedIn, reloadKey]);
 
   const submitReview = async () => {
     if (!myRating) return;
@@ -94,7 +86,7 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
       setReviewMsg(t("review_thanks"));
       setComment("");
       setMyRating(0);
-      await loadSocial();
+      reloadSocial();
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {} finally { setSubmittingReview(false); }
   };
@@ -110,10 +102,8 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
     if (!user) { promptLogin(); return; }
     setSaved((s) => !s);
     if (Platform.OS !== "web") Haptics.selectionAsync();
-    try { await api.toggleSave(event.id); } catch { loadSocial(); }
+    try { await api.toggleSave(event.id); } catch { reloadSocial(); }
   };
-
-  useEffect(() => { loadSocial(); }, [loadSocial, checkedIn]);
 
   const instaUrl = event.instagram ? `https://instagram.com/${event.instagram.replace(/^@/, "")}` : "";
 
@@ -132,10 +122,16 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
               <Text style={{ fontSize: 13 }}>{event.emoji || meta.emoji}</Text>
               <Text style={styles.catBadgeText}>{meta.label}</Text>
             </View>
-            {event.is_recurring && !!event.recurrence_label && (
+            {event.is_recurring && !!event.recurrence_days?.length && (
               <View style={styles.recurringBadge} testID="recurring-badge">
                 <Ionicons name="repeat" size={12} color="#FFFFFF" />
-                <Text style={styles.recurringText}>{event.recurrence_label}</Text>
+                <Text style={styles.recurringText}>{recurrenceText(event, t, lang)}</Text>
+              </View>
+            )}
+            {live && (
+              <View style={[styles.recurringBadge, { backgroundColor: "#FF3B30" }]} testID="live-badge">
+                <View style={styles.liveDotSmall} />
+                <Text style={styles.recurringText}>{t("live_now")}</Text>
               </View>
             )}
           </View>
@@ -166,13 +162,11 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
         <View style={styles.metaRow}>
           <View style={styles.metaItem}>
             <Ionicons name={event.is_recurring ? "repeat" : "calendar-outline"} size={16} color={colors.onSurfaceTertiary} />
-            <Text style={[styles.metaText, { color: colors.onSurface }]}>
-              {event.is_recurring && event.recurrence_label ? event.recurrence_label : formatDate(event.next_occurrence || event.start_time)}
-            </Text>
+            <Text style={[styles.metaText, { color: colors.onSurface, flexShrink: 1 }]} testID="event-when">{formatWhen(event, t, lang)}</Text>
           </View>
-          <View style={[styles.countdownChip, { backgroundColor: colors.brandTertiary, marginLeft: "auto" }]}>
-            <Ionicons name="time" size={13} color={colors.onBrandTertiary} />
-            <Text style={[styles.countdownText, { color: colors.onBrandTertiary }]} testID="event-countdown">{countdown(event.next_occurrence || event.start_time)}</Text>
+          <View style={[styles.countdownChip, { backgroundColor: live ? colors.error : colors.brandTertiary, marginLeft: "auto" }]}>
+            <Ionicons name={live ? "radio" : "time"} size={13} color={live ? "#FFFFFF" : colors.onBrandTertiary} />
+            <Text style={[styles.countdownText, { color: live ? "#FFFFFF" : colors.onBrandTertiary }]} testID="event-countdown">{whenLabel(event, t, lang)}</Text>
           </View>
         </View>
         <View style={styles.metaRow}>
@@ -199,19 +193,19 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
             if (!user) { promptLogin(); return; }
             if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
             if (checkedIn) { onCheckin(); return; }
-            if (soldOut) return;
+            if (soldOut || over) return;
             setShowRsvp(true);
           }}
-          disabled={soldOut && !checkedIn}
+          disabled={(soldOut || over) && !checkedIn}
           style={[styles.checkinBtn, {
-            backgroundColor: checkedIn ? colors.success : soldOut ? colors.surfaceTertiary : atVenue ? colors.accent : colors.surfaceTertiary,
-            borderColor: checkedIn ? colors.success : atVenue ? colors.accent : colors.border,
-            opacity: soldOut && !checkedIn ? 0.5 : 1,
+            backgroundColor: checkedIn ? colors.success : soldOut || over ? colors.surfaceTertiary : atVenue ? colors.accent : colors.surfaceTertiary,
+            borderColor: checkedIn ? colors.success : atVenue && !over ? colors.accent : colors.border,
+            opacity: (soldOut || over) && !checkedIn ? 0.5 : 1,
           }]}
         >
-          <Ionicons name={checkedIn ? "checkmark-circle" : atVenue ? "location" : "add-circle-outline"} size={20} color={checkedIn ? "#FFFFFF" : atVenue ? colors.onAccent : colors.onSurface} />
-          <Text style={[styles.checkinText, { color: checkedIn ? "#FFFFFF" : atVenue ? colors.onAccent : colors.onSurface }]}>
-            {checkedIn ? t("going") : soldOut ? t("sold_out") : atVenue ? `${t("at_venue")} · ${t("checkin_cta")}` : t("checkin_cta")}
+          <Ionicons name={checkedIn ? "checkmark-circle" : over ? "time-outline" : atVenue ? "location" : "add-circle-outline"} size={20} color={checkedIn ? "#FFFFFF" : atVenue && !over ? colors.onAccent : colors.onSurface} />
+          <Text style={[styles.checkinText, { color: checkedIn ? "#FFFFFF" : atVenue && !over ? colors.onAccent : colors.onSurface }]}>
+            {checkedIn ? t("going") : over ? t("checkin_closed") : soldOut ? t("sold_out") : atVenue ? `${t("at_venue")} · ${t("checkin_cta")}` : t("checkin_cta")}
           </Text>
         </Pressable>
 
@@ -399,6 +393,7 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: "row", alignItems: "center" },
   metaItem: { flexDirection: "row", alignItems: "center", gap: 8 },
   metaText: { fontSize: 14, fontWeight: "500" },
+  liveDotSmall: { width: 7, height: 7, borderRadius: 4, backgroundColor: "#FFFFFF" },
   countdownChip: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
   countdownText: { fontSize: 13, fontWeight: "800" },
   saveHero: { position: "absolute", top: 14, right: 14, width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(0,0,0,0.4)", alignItems: "center", justifyContent: "center" },

@@ -15,6 +15,7 @@ import { AuthProvider, useAuth } from "@/src/auth/AuthContext";
 import { I18nProvider, useI18n } from "@/src/i18n";
 import { api } from "@/src/api/client";
 import { LocationPermissionProvider } from "@/src/location/LocationPermission";
+import { FilterProvider } from "@/src/filters/FilterContext";
 import { registerForPush } from "@/src/push";
 import SplashIntro from "@/src/components/SplashIntro";
 
@@ -135,9 +136,11 @@ export default function RootLayout() {
           <ThemeProvider>
             <I18nProvider>
               <LocationPermissionProvider>
-                <AuthProvider>
-                  <AuthGate />
-                </AuthProvider>
+                <FilterProvider>
+                  <AuthProvider>
+                    <AuthGate />
+                  </AuthProvider>
+                </FilterProvider>
               </LocationPermissionProvider>
             </I18nProvider>
           </ThemeProvider>

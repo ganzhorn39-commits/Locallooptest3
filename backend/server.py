@@ -15,6 +15,8 @@ from typing import List, Optional
 from datetime import datetime, timezone, timedelta
 
 from moderation import censor_text, find_bad_words
+import event_time
+from event_time import HIDE_AFTER_END, MAX_DURATION, current_window, is_recurring, parse_iso, upcoming_starts
 
 
 ROOT_DIR = Path(__file__).parent
@@ -152,6 +154,7 @@ class EventCreate(BaseModel):
     title: str
     category: str  # nightlife | food | sports | culture
     start_time: str  # ISO string
+    end_time: str = ""  # optional ISO string; without it the event is assumed to last 3 hours
     description: str = ""
     image_url: str = ""
     banner_url: str = ""
@@ -180,6 +183,7 @@ class Event(BaseModel):
     title: str
     category: str
     start_time: str
+    end_time: str = ""
     description: str = ""
     image_url: str = ""
     banner_url: str = ""
@@ -347,21 +351,13 @@ async def logout(authorization: Optional[str] = Header(None)):
 
 
 # ----------------------------- Events -----------------------------
-def next_recurring_occurrence(days, hour, minute):
-    if not days:
-        return None
-    now = now_utc()
-    for offset in range(0, 15):
-        d = now + timedelta(days=offset)
-        if d.weekday() in days:
-            cand = d.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if cand > now:
-                return cand.isoformat()
-    return None
+def lifecycle(doc: dict, now: Optional[datetime] = None) -> str:
+    """upcoming | live | ended (over, still listed for 2h) | past (gone from map and lists) | cancelled."""
+    return event_time.phase(doc, now or now_utc())
 
 
 def with_live_count(doc: dict) -> dict:
-    """Add a simulated live-pulse jitter on top of real checkins + next occurrence."""
+    """Add a simulated live-pulse jitter on top of real checkins + when the event happens (phase, dates)."""
     base = doc.get("checkins", 0)
     jitter = random.randint(0, 18) + (hash(doc["id"]) % 40)
     doc["live_count"] = base + abs(jitter)
@@ -374,19 +370,25 @@ def with_live_count(doc: dict) -> dict:
     off_lng = ((((seed // 1000) % 1000) / 1000) - 0.5) * 0.008
     doc["pin_latitude"] = round(doc.get("latitude", 0) + off_lat, 6)
     doc["pin_longitude"] = round(doc.get("longitude", 0) + off_lng, 6)
-    doc["next_occurrence"] = compute_next_occurrence(doc)
+    now = now_utc()
+    start, end = current_window(doc, now)
+    # recurring: the running or the next date; one-off events keep their stored start string
+    doc["next_occurrence"] = start.isoformat() if start and is_recurring(doc) else doc.get("start_time")
+    doc["ends_at"] = end.isoformat() if end else None
+    doc["phase"] = lifecycle(doc, now)
+    doc["is_live"] = doc["phase"] == "live"
+    if is_recurring(doc):
+        doc["occurrences"] = upcoming_starts(doc, now)  # coming dates for the app's date filter
+    doc.setdefault("end_time", "")
     return doc
 
 
 def compute_next_occurrence(doc: dict) -> str:
-    if doc.get("is_recurring") and doc.get("recurrence_days"):
-        try:
-            st = datetime.fromisoformat(doc["start_time"])
-            nxt = next_recurring_occurrence(doc["recurrence_days"], st.hour, st.minute)
-            return nxt or doc["start_time"]
-        except Exception:
-            return doc["start_time"]
-    return doc["start_time"]
+    """Start of the running or the next occurrence (one-off events: their start)."""
+    if not is_recurring(doc):
+        return doc.get("start_time")
+    start, _ = current_window(doc, now_utc())
+    return start.isoformat() if start else doc.get("start_time")
 
 
 async def attach_hosts(docs: List[dict]) -> List[dict]:
@@ -404,16 +406,48 @@ async def attach_hosts(docs: List[dict]) -> List[dict]:
     return docs
 
 
+DEMO_HOST = "seed_business"  # owner of the seeded Karlsruhe demo venues
+ROLL_DEMO_EVENTS = os.environ.get("ROLL_DEMO_EVENTS", "true").lower() != "false"
+_demo_checked_at: Optional[datetime] = None
+
+
+async def roll_demo_events(force: bool = False):
+    """Keep the demo map alive: a seeded one-off demo event that is over moves on by whole weeks
+    (same weekday and time). Switch off with ROLL_DEMO_EVENTS=false once real events are there."""
+    global _demo_checked_at
+    now = now_utc()
+    if not ROLL_DEMO_EVENTS or (not force and _demo_checked_at and now - _demo_checked_at < timedelta(minutes=10)):
+        return
+    _demo_checked_at = now
+    docs = await db.events.find({"created_by": DEMO_HOST, "is_recurring": {"$ne": True}, "status": {"$ne": "cancelled"}},
+                                {"_id": 0}).to_list(500)
+    for ev in docs:
+        start = parse_iso(ev.get("start_time"))
+        if not start or lifecycle(ev, now) != "past":
+            continue
+        gone_since = now - (start + event_time.duration(ev) + HIDE_AFTER_END)
+        shift = timedelta(days=7 * (gone_since // timedelta(days=7) + 1))
+        upd = {"start_time": (start + shift).isoformat()}
+        end = parse_iso(ev.get("end_time"))
+        if end:
+            upd["end_time"] = (end + shift).isoformat()
+        await db.events.update_one({"id": ev["id"]}, {"$set": upd})
+
+
 @api_router.get("/events")
 async def list_events(category: Optional[str] = None, user=Depends(get_optional_user)):
-    # Cancelled events leave the map and the lists (their page and chat stay reachable by link).
-    query: dict = {"status": {"$ne": "cancelled"}}
+    # Cancelled events and events that ended more than 2h ago leave the map and the lists
+    # (their page and chat stay reachable by link and from the Chats tab).
+    await roll_demo_events()
+    now = now_utc()
+    recent = (now - MAX_DURATION - HIDE_AFTER_END - timedelta(days=1)).isoformat()  # coarse pre-filter, exact check below
+    query: dict = {"status": {"$ne": "cancelled"}, "$or": [{"is_recurring": True}, {"start_time": {"$gte": recent}}]}
     if category and category != "all":
         query["category"] = category
     hidden_hosts = await blocked_ids(user)
     if hidden_hosts:
         query["created_by"] = {"$nin": list(hidden_hosts)}
-    docs = await db.events.find(query, {"_id": 0}).to_list(1000)
+    docs = [d for d in await db.events.find(query, {"_id": 0}).to_list(1000) if lifecycle(d, now) != "past"]
     ids = [d["id"] for d in docs]
     # "Trending" uses real activity only: check-ins + saves.
     checkins = await counts_by_event(db.checkins, {"event_id": {"$in": ids}})
@@ -449,10 +483,30 @@ async def check_offer(user: dict, title: str, limit: int, event_id: Optional[str
     return title, limit
 
 
+def check_times(start_iso: Optional[str], end_iso: Optional[str]):
+    """Start must be a valid time; an end time (optional) must come after it and within 7 days."""
+    start = parse_iso(start_iso)
+    if not start:
+        raise HTTPException(status_code=400, detail="Invalid start_time")
+    if end_iso:
+        end = parse_iso(end_iso)
+        if not end:
+            raise HTTPException(status_code=400, detail="Invalid end_time")
+        if end <= start:
+            raise HTTPException(status_code=400, detail={"code": "end_before_start", "message": "The end must be after the start"})
+        if end - start > MAX_DURATION:
+            raise HTTPException(status_code=400, detail={"code": "too_long", "message": "An event can last at most 7 days"})
+    return start
+
+
 @api_router.post("/events")
 async def create_event(payload: EventCreate, user=Depends(get_current_user)):
     data = payload.dict()
     reject_bad_words({k: data.get(k) for k in ("title", "description", "offer_title", "venue_name")})
+    data["end_time"] = (data.get("end_time") or "").strip()
+    check_times(data["start_time"], data["end_time"])
+    if lifecycle(data) in ("ended", "past"):  # a running event is fine ("we're here, come by")
+        raise HTTPException(status_code=400, detail={"code": "event_over", "message": "This time is already over"})
     data["offer_title"], data["offer_limit"] = await check_offer(user, data["offer_title"], data["offer_limit"])
     event = Event(**data, created_by=user["user_id"])
     await db.events.insert_one(event.dict())
@@ -464,6 +518,7 @@ class EventUpdate(BaseModel):
     title: Optional[str] = None
     category: Optional[str] = None
     start_time: Optional[str] = None
+    end_time: Optional[str] = None  # "" removes the end time
     description: Optional[str] = None
     image_url: Optional[str] = None
     banner_url: Optional[str] = None
@@ -498,8 +553,10 @@ async def update_event(event_id: str, payload: EventUpdate, user=Depends(get_cur
         updates["title"] = updates["title"].strip()
         if not updates["title"]:
             raise HTTPException(status_code=400, detail="Title is required")
-    if "start_time" in updates and not parse_iso(updates["start_time"]):
-        raise HTTPException(status_code=400, detail="Invalid start_time")
+    if "start_time" in updates or "end_time" in updates:
+        if "end_time" in updates:
+            updates["end_time"] = updates["end_time"].strip()
+        check_times(updates.get("start_time", ev.get("start_time")), updates.get("end_time", ev.get("end_time", "")))
     if updates.get("join_approval", "auto") not in ("auto", "manual"):
         raise HTTPException(status_code=400, detail="Invalid join_approval")
     if "capacity" in updates:
@@ -561,8 +618,6 @@ async def checkin(event_id: str, body: CheckinBody = CheckinBody(), user=Depends
     doc = await db.events.find_one({"id": event_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Event not found")
-    if doc.get("status") == "cancelled":
-        raise HTTPException(status_code=409, detail="Event cancelled")
     uid = user["user_id"]
     is_host = doc.get("created_by") == uid
     already = await db.checkins.find_one({"event_id": event_id, "user_id": uid})
@@ -580,6 +635,12 @@ async def checkin(event_id: str, body: CheckinBody = CheckinBody(), user=Depends
         # toggle off a pending request
         await db.join_requests.delete_one({"event_id": event_id, "user_id": uid})
     else:
+        # Leaving (above) always works, joining only while the event is on.
+        state = lifecycle(doc)
+        if state == "cancelled":
+            raise HTTPException(status_code=409, detail="Event cancelled")
+        if state in ("ended", "past"):
+            raise HTTPException(status_code=409, detail="Event is over")
         capacity = int(doc.get("capacity", 0) or 0)
         if capacity > 0:
             current = await db.checkins.count_documents({"event_id": event_id})
@@ -775,6 +836,7 @@ async def delete_profile(user=Depends(get_current_user)):
     await db.blocks.delete_many({"$or": [{"user_id": uid}, {"blocked_id": uid}]})
     await db.reports.delete_many({"reporter_id": uid})  # reports *about* this user stay for moderation
     await db.notifications.delete_many({"user_id": uid})
+    await db.chat_hidden.delete_many({"user_id": uid})
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
     return {"ok": True}
@@ -920,6 +982,8 @@ MESSAGE_MAX_LEN = 2000
 @api_router.post("/events/{event_id}/messages")
 async def post_message(event_id: str, payload: MessageCreate, user=Depends(get_current_user)):
     ev_doc = await require_attending(event_id, user, allow_host=True)
+    if lifecycle(ev_doc) in ("past", "cancelled"):
+        raise HTTPException(status_code=409, detail={"code": "chat_archived", "message": "This chat is archived"})
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Empty message")
@@ -941,6 +1005,83 @@ async def post_message(event_id: str, payload: MessageCreate, user=Depends(get_c
     except Exception as e:
         logger.warning(f"chat notify failed (non-blocking): {e}")
     return msg
+
+
+# ----------------------------- Chats tab -----------------------------
+def chat_state(ev: dict, now: datetime) -> str:
+    """active | ended (archived: the event is over and gone from the map) | cancelled (archived)."""
+    state = lifecycle(ev, now)
+    return {"past": "ended", "cancelled": "cancelled"}.get(state, "active")
+
+
+@api_router.get("/my/chats")
+async def my_chats(user=Depends(get_current_user)):
+    """Event chats of the user: events they joined + events they host. Archived ones (over / cancelled)
+    stay until the user removes them; they are read-only."""
+    uid = user["user_id"]
+    now = now_utc()
+    joined = {c["event_id"]: c for c in await db.checkins.find({"user_id": uid}, {"_id": 0}).to_list(1000)}
+    hosted = await db.events.find({"created_by": uid}, {"_id": 0}).to_list(1000)
+    hidden = {h["event_id"] for h in await db.chat_hidden.find({"user_id": uid}, {"_id": 0, "event_id": 1}).to_list(1000)}
+    events = {e["id"]: e for e in hosted}
+    others = [i for i in joined if i not in events]
+    for e in await db.events.find({"id": {"$in": others}}, {"_id": 0}).to_list(1000):
+        events[e["id"]] = e
+    ids = [i for i in events if i not in hidden]
+    members = await counts_by_event(db.checkins, {"event_id": {"$in": ids}})
+    unread_rows = await db.notifications.find(
+        {"user_id": uid, "type": "chat", "read_at": None, "event_id": {"$in": ids}}, {"_id": 0, "event_id": 1, "count": 1}
+    ).to_list(1000)
+    unread: dict = {}
+    for n in unread_rows:
+        unread[n["event_id"]] = unread.get(n["event_id"], 0) + int(n.get("count") or 1)
+    blocked = list(await blocked_ids(user))
+
+    out = []
+    for eid in ids:
+        ev = events[eid]
+        last = await db.messages.find(
+            {"event_id": eid, "user_id": {"$nin": blocked}, "hidden": {"$ne": True}}, {"_id": 0}
+        ).sort("created_at", -1).to_list(1)
+        last = last[0] if last else None
+        start, end = current_window(ev, now)
+        state = chat_state(ev, now)
+        out.append({
+            "event_id": eid, "title": ev.get("title", ""), "category": ev.get("category", ""),
+            "emoji": ev.get("emoji", ""), "image_url": ev.get("image_url", ""),
+            "role": "host" if ev.get("created_by") == uid else "guest",
+            "state": state, "is_live": lifecycle(ev, now) == "live",
+            "is_recurring": bool(ev.get("is_recurring")),
+            "start_time": ev.get("start_time"), "next_occurrence": start.isoformat() if start else None,
+            "ends_at": end.isoformat() if end else None, "cancelled_at": ev.get("cancelled_at"),
+            "members": members.get(eid, 0), "unread": 0 if state != "active" else unread.get(eid, 0),
+            "last_message": {
+                "user_id": last.get("user_id"), "user_name": last.get("user_name", ""),
+                "text": last.get("text", ""), "system": bool(last.get("system")), "system_key": last.get("system_key"),
+                "created_at": last.get("created_at"),
+            } if last else None,
+            "last_activity": (last or {}).get("created_at") or (joined.get(eid) or {}).get("at") or ev.get("created_at") or "",
+        })
+    active = sorted((c for c in out if c["state"] == "active"), key=lambda c: c["last_activity"], reverse=True)
+    archived = sorted((c for c in out if c["state"] != "active"),
+                      key=lambda c: c["cancelled_at"] or c["ends_at"] or "", reverse=True)
+    return active + archived
+
+
+@api_router.post("/chats/{event_id}/hide")
+async def hide_chat(event_id: str, user=Depends(get_current_user)):
+    """Remove an archived chat from the own Chats tab (the messages stay for everybody else)."""
+    ev = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not ev:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if chat_state(ev, now_utc()) == "active":
+        raise HTTPException(status_code=409, detail="Only archived chats can be removed; leave the event instead")
+    uid = user["user_id"]
+    await db.chat_hidden.update_one({"user_id": uid, "event_id": event_id},
+                                    {"$set": {"user_id": uid, "event_id": event_id, "at": now_utc().isoformat()}}, upsert=True)
+    await db.notifications.update_many({"user_id": uid, "type": "chat", "event_id": event_id, "read_at": None},
+                                       {"$set": {"read_at": now_utc().isoformat()}})
+    return {"ok": True}
 
 
 # ----------------------------- Notification center -----------------------------
@@ -1221,26 +1362,10 @@ async def my_attending(user=Depends(get_current_user)):
 
 # ----------------------------- Host dashboard -----------------------------
 # Real numbers only: the simulated live_count jitter from the map is deliberately left out.
-PAST_GRACE = timedelta(hours=12)  # a one-off event counts as "past" 12h after its start
-
-
-def parse_iso(value) -> Optional[datetime]:
-    if not value or not isinstance(value, str):
-        return None
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-
 def event_phase(doc: dict, now: datetime) -> str:
-    if doc.get("status") == "cancelled":
-        return "cancelled"
-    if doc.get("is_recurring") and doc.get("recurrence_days"):
-        return "upcoming"
-    start = parse_iso(doc.get("start_time"))
-    return "past" if start and start < now - PAST_GRACE else "upcoming"
+    """Dashboard groups: upcoming (incl. running) | past (ended) | cancelled."""
+    p = lifecycle(doc, now)
+    return {"live": "upcoming", "ended": "past"}.get(p, p)
 
 
 async def counts_by_event(collection, match: dict) -> dict:
@@ -1302,9 +1427,11 @@ async def my_dashboard(tz_offset: int = 0, user=Depends(get_current_user)):
         rows.append({
             "id": eid, "title": e.get("title", ""), "category": e.get("category", ""),
             "emoji": e.get("emoji", ""), "image_url": e.get("image_url", ""),
-            "start_time": e.get("start_time"), "next_occurrence": compute_next_occurrence(e),
+            "start_time": e.get("start_time"), "end_time": e.get("end_time", ""),
+            "next_occurrence": compute_next_occurrence(e),
             "is_recurring": bool(e.get("is_recurring")), "recurrence_label": e.get("recurrence_label", ""),
-            "status": e.get("status", "active"), "phase": event_phase(e, now),
+            "recurrence_freq": e.get("recurrence_freq", ""), "recurrence_days": e.get("recurrence_days", []),
+            "status": e.get("status", "active"), "phase": event_phase(e, now), "is_live": lifecycle(e, now) == "live",
             "capacity": int(e.get("capacity", 0) or 0), "join_approval": e.get("join_approval", "auto"),
             "rating": float(e.get("rating", 0) or 0), "rating_count": int(e.get("rating_count", 0) or 0),
             "checkins": checkins.get(eid, 0), "saves": saves.get(eid, 0),
@@ -1374,7 +1501,7 @@ def deal_status(deal: dict, ev: Optional[dict], now: datetime) -> str:
         return "redeemed"
     if not ev or ev.get("status") == "cancelled":
         return "cancelled"
-    if event_phase(ev, now) == "past":
+    if lifecycle(ev, now) == "past":
         return "expired"
     return "active"
 
@@ -1415,7 +1542,7 @@ async def claim_deal(event_id: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Hosts can't claim their own offer")
     if ev.get("status") == "cancelled":
         raise HTTPException(status_code=409, detail="Event cancelled")
-    if event_phase(ev, now_utc()) == "past":
+    if lifecycle(ev) == "past":
         raise HTTPException(status_code=409, detail="Event is over")
     if not await db.checkins.find_one({"event_id": event_id, "user_id": uid}):
         raise HTTPException(status_code=403, detail="Check in to claim this offer")
@@ -1665,6 +1792,7 @@ async def seed_and_index():
     await db.reports.create_index([("reporter_id", 1), ("target_type", 1), ("target_id", 1)], unique=True)
     await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
     await db.notifications.create_index([("user_id", 1), ("read_at", 1)])
+    await db.chat_hidden.create_index([("user_id", 1), ("event_id", 1)], unique=True)
     SEED_VERSION = 2
     meta = await db.meta.find_one({"key": "seed_version"})
     current_version = (meta or {}).get("value", 0)
@@ -1707,6 +1835,7 @@ async def seed_and_index():
                     "created_at": (now + timedelta(minutes=j)).isoformat()})
         logger.info("Seeded %d Karlsruhe venues", len(KA_VENUES))
         await db.meta.update_one({"key": "seed_version"}, {"$set": {"key": "seed_version", "value": SEED_VERSION}}, upsert=True)
+    await roll_demo_events(force=True)
 
 
 @api_router.get("/")

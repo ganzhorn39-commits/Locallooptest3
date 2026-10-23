@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { storage } from "@/src/utils/storage";
+import { setCalendarLocale } from "@/src/i18n/calendar";
 
 export type Lang = "en" | "de";
 const LANG_KEY = "localloop_lang";
@@ -14,9 +15,9 @@ const DICT: Record<Lang, Record<string, string>> = {
     cat_outdoor: "Outdoor & Nature", cat_workshops: "Workshops", cat_music: "Music & Concerts",
     cat_restaurant: "Restaurant", cat_cafe: "Café", trends: "Trends", trending_now: "Trending now",
     // quick filters
-    quick_today: "Today", quick_free: "Free Entry", quick_outdoor: "Outdoor", quick_near: "Near Me",
+    quick_free: "Free Entry", quick_outdoor: "Outdoor",
     // search
-    search_placeholder: "Search events, categories, cities...",
+    search_placeholder: "Search events or venues...",
     // welcome
     slogan: "The city's pulse. Live on your map.",
     google: "Continue with Google", facebook: "Continue with Facebook", email: "Sign up with Email",
@@ -210,6 +211,30 @@ const DICT: Record<Lang, Record<string, string>> = {
     sys_updated_time: "✏️ The host changed the time. Check the details before you go.",
     sys_updated_place: "✏️ The host changed the place. Check the details before you go.",
     sys_updated_time_place: "✏️ The host changed the time and place. Check the details before you go.",
+    // stage 4: filters, event end, live, chats archive
+    splash_slogan: "The city's pulse, on your map.",
+    quick_live: "Live now", quick_deals: "With deal",
+    filters_title: "Filters", filters_reset: "Reset", filters_reset_all: "Reset filters",
+    filter_date: "Date", filter_date_all: "All upcoming", filter_date_today: "Today", filter_date_tomorrow: "Tomorrow",
+    filter_date_weekend: "Weekend", filter_pick_date: "Pick a date",
+    filter_radius_needs_location: "LocalLoop needs your location to filter by distance.", filter_allow_location: "Allow location",
+    filter_host: "Host", filter_host_all: "All", filter_host_business: "Businesses only",
+    filter_show_one: "Show 1 event", filter_show_many: "Show {n} events",
+    live_now: "Happening now", live_until: "Until {time}", live_since: "Since {time}", ended_label: "Ended", in_minutes: "in {n} min", today_at: "Today, {time}", tomorrow_at: "Tomorrow, {time}",
+    rec_weekly: "Every week", rec_biweekly: "Every 2 weeks", rec_monthly: "Every {which} {days} of the month",
+    rec_nth_1: "1st", rec_nth_2: "2nd", rec_nth_3: "3rd", rec_nth_4: "4th", rec_last: "last",
+    end_time_toggle: "Set an end time", end_time_label: "Ends at", end_next_day: "next day",
+    end_time_hint: "Without an end time we assume 3 hours. The event leaves the map 2 hours after it ends.",
+    error_event_over: "That time is already over. Pick a later time.",
+    error_end_before_start: "The end has to be after the start.",
+    event_over_banner: "This event is over.", checkin_closed: "Event is over",
+    chats_archive: "Archive", chat_tag_ended: "Archived · Event over", chat_tag_cancelled: "Event cancelled",
+    chat_tag_host: "Your event", chat_no_messages: "No messages yet", chat_you: "You", chat_members: "{n} going",
+    chat_remove: "Delete chat", chat_open_event: "View event", chat_open: "Open chat",
+    chat_leave_title: "Leave “{title}”?", chat_leave_body: "You'll be checked out and the chat leaves your list.",
+    chat_remove_body: "The chat only disappears for you – the others keep it.",
+    chat_archived_ended: "This event is over – the chat is archived and read-only.",
+    chat_archived_cancelled: "This event was cancelled – the chat is archived and read-only.",
   },
   de: {
     tab_map: "Karte", tab_explore: "Entdecken", tab_create: "Erstellen", tab_chats: "Chats", tab_profile: "Profil",
@@ -217,8 +242,8 @@ const DICT: Record<Lang, Record<string, string>> = {
     cat_food: "Essen & Kulinarik", cat_arts: "Kunst & Kultur", cat_networking: "Networking", cat_gaming: "Gaming & E-Sport",
     cat_outdoor: "Natur & Outdoor", cat_workshops: "Workshops", cat_music: "Musik & Konzerte",
     cat_restaurant: "Restaurant", cat_cafe: "Café", trends: "Trends", trending_now: "Gerade angesagt",
-    quick_today: "Heute", quick_free: "Freier Eintritt", quick_outdoor: "Draußen", quick_near: "In der Nähe",
-    search_placeholder: "Events, Kategorien, Städte suchen...",
+    quick_free: "Freier Eintritt", quick_outdoor: "Draußen",
+    search_placeholder: "Events oder Lokale suchen...",
     slogan: "Dein Stadtpuls. Live auf der Karte.",
     google: "Weiter mit Google", facebook: "Weiter mit Facebook", email: "Mit E-Mail registrieren",
     business: "Für Veranstalter: Business Login", demo: "Als Demo erkunden",
@@ -392,6 +417,30 @@ const DICT: Record<Lang, Record<string, string>> = {
     sys_updated_time: "✏️ Der Veranstalter hat die Uhrzeit geändert. Schau vor dem Losgehen nochmal in die Details.",
     sys_updated_place: "✏️ Der Veranstalter hat den Ort geändert. Schau vor dem Losgehen nochmal in die Details.",
     sys_updated_time_place: "✏️ Der Veranstalter hat Zeit und Ort geändert. Schau vor dem Losgehen nochmal in die Details.",
+    // Etappe 4: Filter, Event-Ende, Live, Chat-Archiv
+    splash_slogan: "Der Puls der Stadt – auf deiner Karte.",
+    quick_live: "Jetzt live", quick_deals: "Mit Angebot",
+    filters_title: "Filter", filters_reset: "Zurücksetzen", filters_reset_all: "Filter zurücksetzen",
+    filter_date: "Datum", filter_date_all: "Alle kommenden", filter_date_today: "Heute", filter_date_tomorrow: "Morgen",
+    filter_date_weekend: "Wochenende", filter_pick_date: "Datum wählen",
+    filter_radius_needs_location: "Für den Umkreis braucht LocalLoop deinen Standort.", filter_allow_location: "Standort freigeben",
+    filter_host: "Veranstalter", filter_host_all: "Alle", filter_host_business: "Nur Unternehmen",
+    filter_show_one: "1 Event anzeigen", filter_show_many: "{n} Events anzeigen",
+    live_now: "Läuft gerade", live_until: "Noch bis {time}", live_since: "Seit {time}", ended_label: "Beendet", in_minutes: "in {n} Min.", today_at: "Heute, {time}", tomorrow_at: "Morgen, {time}",
+    rec_weekly: "Jede Woche", rec_biweekly: "Alle 2 Wochen", rec_monthly: "Jeden {which} {days} im Monat",
+    rec_nth_1: "1.", rec_nth_2: "2.", rec_nth_3: "3.", rec_nth_4: "4.", rec_last: "letzten",
+    end_time_toggle: "Endzeit festlegen", end_time_label: "Ende", end_next_day: "am nächsten Tag",
+    end_time_hint: "Ohne Endzeit rechnen wir mit 3 Stunden. 2 Stunden nach dem Ende verschwindet das Event von der Karte.",
+    error_event_over: "Dieser Zeitpunkt ist schon vorbei. Wähle eine spätere Uhrzeit.",
+    error_end_before_start: "Das Ende muss nach dem Beginn liegen.",
+    event_over_banner: "Dieses Event ist vorbei.", checkin_closed: "Event ist vorbei",
+    chats_archive: "Archiv", chat_tag_ended: "Archiviert · Event beendet", chat_tag_cancelled: "Event abgesagt",
+    chat_tag_host: "Dein Event", chat_no_messages: "Noch keine Nachrichten", chat_you: "Du", chat_members: "{n} dabei",
+    chat_remove: "Chat löschen", chat_open_event: "Event ansehen", chat_open: "Chat öffnen",
+    chat_leave_title: "„{title}“ verlassen?", chat_leave_body: "Du wirst ausgecheckt und der Chat verschwindet aus deiner Liste.",
+    chat_remove_body: "Der Chat verschwindet nur bei dir – die anderen behalten ihn.",
+    chat_archived_ended: "Das Event ist vorbei – dieser Chat ist archiviert und nur noch lesbar.",
+    chat_archived_cancelled: "Das Event wurde abgesagt – dieser Chat ist archiviert und nur noch lesbar.",
   },
 };
 
@@ -403,10 +452,10 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     (async () => {
       const saved = await storage.getItem<string>(LANG_KEY, "");
-      if (saved === "en" || saved === "de") setLangState(saved);
+      if (saved === "en" || saved === "de") { setCalendarLocale(saved); setLangState(saved); }
     })();
   }, []);
-  const setLang = (l: Lang) => { setLangState(l); storage.setItem(LANG_KEY, l); };
+  const setLang = (l: Lang) => { setCalendarLocale(l); setLangState(l); storage.setItem(LANG_KEY, l); };
   const t = (k: string) => DICT[lang][k] ?? DICT.en[k] ?? k;
   return <I18nCtx.Provider value={{ lang, setLang, t }}>{children}</I18nCtx.Provider>;
 }

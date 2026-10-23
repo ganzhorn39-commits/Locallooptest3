@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, NativeSyntheticEvent, NativeScrollEvent, Platform } from "react-native";
 import { useTheme } from "@/src/theme/theme";
+import { useI18n } from "@/src/i18n";
 
 const ITEM_H = 44;
 const VISIBLE = 5;
@@ -107,7 +108,10 @@ type Props = {
 
 export default function TimeWheel({ hour, minute, onChange }: Props) {
   const { colors } = useTheme();
+  const { lang } = useI18n();
+  const h24 = lang === "de"; // German: 0–23 without AM/PM
   const hours12 = useMemo(() => Array.from({ length: 12 }, (_, i) => `${i + 1}`), []);
+  const hours24 = useMemo(() => Array.from({ length: 24 }, (_, i) => `${i}`.padStart(2, "0")), []);
   const minutes = useMemo(() => Array.from({ length: 60 }, (_, i) => `${i}`.padStart(2, "0")), []);
   const periods = ["AM", "PM"];
 
@@ -124,12 +128,20 @@ export default function TimeWheel({ hour, minute, onChange }: Props) {
   return (
     <View style={[styles.wrap, { backgroundColor: colors.surfaceTertiary, borderColor: colors.border }]} testID="time-wheel">
       <View style={[styles.centerBand, { borderColor: colors.border }]} pointerEvents="none" />
-      <View style={styles.columns}>
-        <WheelColumn testID="wheel-hour" items={hours12} index={hour12Index} width={70} onIndexChange={(i) => emit(i, minute, period)} />
-        <Text style={[styles.colon, { color: colors.onSurface }]}>:</Text>
-        <WheelColumn testID="wheel-minute" items={minutes} index={minute} width={70} onIndexChange={(i) => emit(hour12Index, i, period)} />
-        <WheelColumn testID="wheel-period" items={periods} index={period} width={70} onIndexChange={(i) => emit(hour12Index, minute, i)} />
-      </View>
+      {h24 ? (
+        <View style={styles.columns} key="h24">
+          <WheelColumn testID="wheel-hour" items={hours24} index={hour} width={80} onIndexChange={(i) => onChange(i, minute)} />
+          <Text style={[styles.colon, { color: colors.onSurface }]}>:</Text>
+          <WheelColumn testID="wheel-minute" items={minutes} index={minute} width={80} onIndexChange={(i) => onChange(hour, i)} />
+        </View>
+      ) : (
+        <View style={styles.columns} key="h12">
+          <WheelColumn testID="wheel-hour" items={hours12} index={hour12Index} width={70} onIndexChange={(i) => emit(i, minute, period)} />
+          <Text style={[styles.colon, { color: colors.onSurface }]}>:</Text>
+          <WheelColumn testID="wheel-minute" items={minutes} index={minute} width={70} onIndexChange={(i) => emit(hour12Index, i, period)} />
+          <WheelColumn testID="wheel-period" items={periods} index={period} width={70} onIndexChange={(i) => emit(hour12Index, minute, i)} />
+        </View>
+      )}
     </View>
   );
 }

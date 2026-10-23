@@ -9,12 +9,13 @@ import * as Haptics from "expo-haptics";
 import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
 import { useAuth } from "@/src/auth/AuthContext";
-import { api, EventItem, profanityWords } from "@/src/api/client";
+import { api, errorCode, EventItem, profanityWords } from "@/src/api/client";
 import { DEFAULT_REGION, CATEGORIES, CategoryKey } from "@/src/constants/categories";
 import LocationPicker from "@/src/components/LocationPicker";
 import CategoryWheel from "@/src/components/CategoryWheel";
 import TimeWheel from "@/src/components/TimeWheel";
 import { pickImage } from "@/src/utils/pickImage";
+import { weekdayShort } from "@/src/utils/eventTime";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const FREQS: { key: string; label: string }[] = [
@@ -51,7 +52,7 @@ const asCategory = (v?: string): CategoryKey =>
 // `inTabs`: rendered inside the tab navigator, which already keeps the screen above the home indicator.
 export default function CreateEventScreen({ onDone, showClose, initial, inTabs }: { onDone: () => void; showClose?: boolean; initial?: EventItem; inTabs?: boolean }) {
   const { colors } = useTheme();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const editing = !!initial;
@@ -62,13 +63,20 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
   const customBanner = initial && !Object.values(CATEGORY_IMAGES).includes(initial.image_url)
     ? (initial.banner_url || initial.image_url || "") : "";
 
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const initEnd = initial?.end_time ? new Date(initial.end_time) : null;
+  const hasInitEnd = !!initEnd && !isNaN(initEnd.getTime());
+  const todayISO = localDateISO(new Date());
   const [title, setTitle] = useState(initial?.title || "");
   const [category, setCategory] = useState<CategoryKey>(initial ? asCategory(initial.category) : "nightlife");
   const [dateISO, setDateISO] = useState(hasStart ? localDateISO(start!) : todayISO);
   const [showCal, setShowCal] = useState(false);
   const [hour, setHour] = useState(hasStart ? start!.getHours() : 20);
   const [minute, setMinute] = useState(hasStart ? start!.getMinutes() : 0);
+  // Optional end time (same day, or the next morning when it is earlier than the start).
+  const [hasEnd, setHasEnd] = useState(hasInitEnd);
+  const [endHour, setEndHour] = useState(hasInitEnd ? initEnd!.getHours() : ((hasStart ? start!.getHours() : 20) + 3) % 24);
+  const [endMinute, setEndMinute] = useState(hasInitEnd ? initEnd!.getMinutes() : (hasStart ? start!.getMinutes() : 0));
+  const [endEdited, setEndEdited] = useState(false);
   const [description, setDescription] = useState(initial?.description || "");
   const [instagram, setInstagram] = useState(initial?.instagram || "");
   const [website, setWebsite] = useState(initial?.website || "");
@@ -112,12 +120,15 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
     try {
       const when = new Date(dateISO + "T00:00:00");
       when.setHours(hour, minute, 0, 0);
+      const end = new Date(when);
+      end.setHours(endHour, endMinute, 0, 0);
+      if (end <= when) end.setDate(end.getDate() + 1); // e.g. 22:00 – 03:00
       const timeStr = `${((hour % 12) || 12)}:${String(minute).padStart(2, "0")} ${hour >= 12 ? "PM" : "AM"}`;
       const recLabel = isRecurring && days.length
         ? `${FREQS.find((f) => f.key === freq)?.label} · ${days.map((d) => WEEKDAYS[d]).join(", ")} at ${timeStr}`
         : "";
       const payload = {
-        title: title.trim(), category, start_time: when.toISOString(),
+        title: title.trim(), category, start_time: when.toISOString(), end_time: hasEnd ? end.toISOString() : "",
         description: description.trim(),
         image_url: banner || CATEGORY_IMAGES[category], banner_url: banner || CATEGORY_IMAGES[category],
         instagram: instagram.trim(), website: website.trim(), tickets_url: tickets.trim(),
@@ -131,7 +142,10 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
       };
       if (initial) {
         // Keep the stored timestamp when the date/time was not touched (avoids a false "time changed" notice).
-        if (hasStart && Math.floor(when.getTime() / 60000) === Math.floor(start!.getTime() / 60000)) payload.start_time = initial.start_time;
+        const startKept = hasStart && Math.floor(when.getTime() / 60000) === Math.floor(start!.getTime() / 60000);
+        if (startKept) payload.start_time = initial.start_time;
+        // An untouched end stays exactly as stored (also multi-day ends the wheel can't show).
+        if (startKept && hasInitEnd && hasEnd && !endEdited) payload.end_time = initial.end_time!;
         await api.updateEvent(initial.id, payload);
       } else {
         await api.createEvent(payload);
@@ -145,7 +159,10 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
       const full = msg.match(/check-ins \((\d+)\)/);
       const dealsTaken = msg.match(/claimed deals \((\d+)\)/);
       const badWords = profanityWords(e);
+      const code = errorCode(e);
       if (badWords) setError(t("profanity_error").replace("{words}", badWords.join(", ")));
+      else if (code === "event_over") setError(t("error_event_over"));
+      else if (code === "end_before_start" || code === "too_long") setError(t("error_end_before_start"));
       else if (dealsTaken) setError(t("offer_limit_error").replace("{n}", dealsTaken[1]));
       else if (!editing) setError(t("create_failed"));
       else if (full) setError(t("edit_capacity_error").replace("{n}", full[1]));
@@ -199,6 +216,28 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
           <TimeWheel hour={hour} minute={minute} onChange={(h, m) => { setHour(h); setMinute(m); }} />
         </Field>
 
+        <Field label={t("end_time_label")} colors={colors}>
+          <View style={[styles.recurRow, { backgroundColor: colors.surfaceTertiary, borderColor: colors.border }]}>
+            <Text style={{ color: colors.onSurface, fontSize: 14, flex: 1, fontWeight: "600" }}>{t("end_time_toggle")}</Text>
+            <Switch testID="end-time-toggle" value={hasEnd} trackColor={{ true: colors.brand, false: colors.borderStrong }}
+              onValueChange={(v) => {
+                setHasEnd(v); setEndEdited(true);
+                if (v && !hasInitEnd) { setEndHour((hour + 3) % 24); setEndMinute(minute); }
+              }} />
+          </View>
+          {hasEnd && (
+            <>
+              <TimeWheel hour={endHour} minute={endMinute} onChange={(h, m) => { setEndHour(h); setEndMinute(m); setEndEdited(true); }} />
+              {endHour * 60 + endMinute <= hour * 60 + minute && (
+                <Text testID="end-next-day" style={[styles.hintText, { color: colors.brand, marginTop: 0, fontWeight: "700" }]}>
+                  {`${String(endHour).padStart(2, "0")}:${String(endMinute).padStart(2, "0")} · ${t("end_next_day")}`}
+                </Text>
+              )}
+            </>
+          )}
+          <Text style={[styles.hintText, { color: colors.onSurfaceTertiary, marginTop: 0 }]}>{t("end_time_hint")}</Text>
+        </Field>
+
         <Field label={t("recurring_q")} colors={colors}>
           <View style={[styles.recurRow, { backgroundColor: colors.surfaceTertiary, borderColor: colors.border }]}>
             <Text style={{ color: colors.onSurface, fontSize: 14, flex: 1, fontWeight: "600" }}>{t("repeat_this")}</Text>
@@ -223,7 +262,7 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
                   return (
                     <Pressable key={i} testID={`day-${i}`} onPress={() => toggleDay(i)}
                       style={[styles.dayChip, { backgroundColor: active ? colors.brand : colors.surfaceTertiary, borderColor: active ? colors.brand : colors.border }]}>
-                      <Text style={[styles.dayText, { color: active ? "#FFFFFF" : colors.onSurface }]}>{d}</Text>
+                      <Text style={[styles.dayText, { color: active ? "#FFFFFF" : colors.onSurface }]}>{weekdayShort(i, lang)}</Text>
                     </Pressable>
                   );
                 })}

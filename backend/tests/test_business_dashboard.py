@@ -35,12 +35,17 @@ def _session(alias: str):
 
 
 def _event(sess, title, start, **extra):
+    # An event that is already over can't be created: create it for tomorrow, then move it into the past.
+    over = start < datetime.now(timezone.utc) - timedelta(hours=3)
     payload = {
-        "title": title, "category": "food", "start_time": start.isoformat(),
+        "title": title, "category": "food",
+        "start_time": (datetime.now(timezone.utc) + timedelta(days=1) if over else start).isoformat(),
         "latitude": 49.0089, "longitude": 8.4069, "address": "TEST", **extra,  # no "Karlsruhe": seed tests filter on it
     }
     r = sess.post(f"{API}/events", json=payload)
     assert r.status_code == 200, r.text
+    if over:
+        assert sess.patch(f"{API}/events/{r.json()['id']}", json={"start_time": start.isoformat()}).status_code == 200
     return r.json()["id"]
 
 
