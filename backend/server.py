@@ -484,10 +484,19 @@ async def get_public_user(user_id: str):
 @api_router.delete("/profile")
 async def delete_profile(user=Depends(get_current_user)):
     uid = user["user_id"]
+    # Keep the per-event check-in counters in sync with the check-ins that disappear.
+    for c in await db.checkins.find({"user_id": uid}, {"_id": 0, "event_id": 1}).to_list(None):
+        await db.events.update_one({"id": c["event_id"]}, {"$inc": {"checkins": -1}})
     await db.checkins.delete_many({"user_id": uid})
-    await db.messages.delete_many({"sender_id": uid})
+    await db.join_requests.delete_many({"user_id": uid})
+    await db.saves.delete_many({"user_id": uid})
+    await db.messages.delete_many({"user_id": uid})  # chat messages carry user_id (+ copied name/picture)
+    reviewed = await db.reviews.find({"user_id": uid}, {"_id": 0, "event_id": 1}).to_list(None)
     await db.reviews.delete_many({"user_id": uid})
+    for r in reviewed:
+        await recompute_rating(r["event_id"])
     await db.crews.update_many({}, {"$pull": {"member_ids": uid}})
+    await db.crew_suggestions.update_many({}, {"$pull": {"votes": uid}})
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
     return {"ok": True}
