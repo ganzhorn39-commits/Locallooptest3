@@ -14,6 +14,7 @@ import { getAge } from "@/src/utils/age";
 import { pickImage } from "@/src/utils/pickImage";
 import { storage } from "@/src/utils/storage";
 import CategoryWheel from "@/src/components/CategoryWheel";
+import AccountTypeCards from "@/src/components/AccountTypeCards";
 import DateWheel from "@/src/components/DateWheel";
 import { CategoryKey } from "@/src/constants/categories";
 
@@ -112,9 +113,8 @@ export default function Onboarding() {
           <Text style={[styles.brand, { color: colors.onSurface }]}>LocalLoop</Text>
         </View>
         <Text style={[styles.h1, { color: colors.onSurface }]}>{t("onb_choose_role")}</Text>
-        <View style={{ gap: 14, marginTop: 24, paddingHorizontal: 20 }}>
-          <RoleCard testID="role-visitor" colors={colors} icon="compass" title={t("role_visitor")} desc={t("role_visitor_desc")} onPress={() => setRole("user")} />
-          <RoleCard testID="role-business" colors={colors} icon="briefcase" title={t("role_business")} desc={t("role_business_desc")} onPress={() => setRole("business")} accent />
+        <View style={{ marginTop: 24, paddingHorizontal: 20 }}>
+          <AccountTypeCards prefix="role" onChoose={setRole} />
         </View>
       </View>
     );
@@ -227,21 +227,6 @@ function Check({ testID, checked, onToggle, colors, children }: any) {
         {checked && <Ionicons name="checkmark" size={16} color={colors.onBrand} />}
       </View>
       <View style={{ flex: 1, gap: 4 }}>{children}</View>
-    </Pressable>
-  );
-}
-
-function RoleCard({ testID, colors, icon, title, desc, onPress, accent }: any) {
-  return (
-    <Pressable testID={testID} onPress={onPress} style={[styles.roleCard, { backgroundColor: colors.surfaceSecondary, borderColor: accent ? colors.accent : colors.border }]}>
-      <View style={[styles.roleIcon, { backgroundColor: accent ? colors.accent : colors.brand }]}>
-        <Ionicons name={icon} size={24} color={accent ? colors.onAccent : "#FFFFFF"} />
-      </View>
-      <View style={{ flex: 1 }}>
-        <Text style={[styles.roleTitle, { color: colors.onSurface }]}>{title}</Text>
-        <Text style={[styles.roleDesc, { color: colors.onSurfaceTertiary }]}>{desc}</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={22} color={colors.onSurfaceTertiary} />
     </Pressable>
   );
 }

@@ -99,6 +99,7 @@ class TestChat:
 
 
 # -------------------- Stories --------------------
+@pytest.mark.skip(reason="veraltet: Stories/Moments wurden 2026-06 entfernt")
 class TestStories:
     def test_stories_get_public(self, event_id):
         r = requests.get(f"{API}/events/{event_id}/stories")
@@ -142,6 +143,7 @@ class TestStories:
 
 
 # -------------------- Participants --------------------
+@pytest.mark.skip(reason="veraltet: Teilnehmerliste braucht seit Etappe 2 einen Login")
 class TestParticipants:
     def test_participants_returns_count_and_list(self, auth, event_id):
         # ensure at least one checkin

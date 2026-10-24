@@ -16,7 +16,8 @@
         "NSPhotoLibraryUsageDescription": "Choose photos for your profile and moments",
         "NSCalendarsUsageDescription": "Save events to your calendar",
         "NSCalendarsFullAccessUsageDescription": "Save events to your calendar"
-      }
+      },
+      "usesAppleSignIn": true
     },
     "android": {
       "adaptiveIcon": {
@@ -54,7 +55,8 @@
       "expo-secure-store",
       "expo-status-bar",
       "expo-web-browser",
-      "@react-native-vector-icons/ionicons"
+      "@react-native-vector-icons/ionicons",
+      "expo-apple-authentication"
     ],
     "experiments": {
       "typedRoutes": true

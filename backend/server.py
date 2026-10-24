@@ -308,6 +308,169 @@ async def create_session(req: SessionRequest):
     return {"user": user, "session_token": session_token}
 
 
+# ----------------------------- E-mail code + Apple sign-in -----------------------------
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL_CODE_TTL = timedelta(minutes=10)
+EMAIL_CODE_MAX_TRIES = 5
+EMAIL_CODES_PER_15MIN = 5
+SESSION_DAYS = 30
+APPLE_ISSUER = "https://appleid.apple.com"
+_apple_jwks = None
+
+
+def dev_login_allowed() -> bool:
+    return os.environ.get("ALLOW_DEV_LOGIN", "").lower() == "true"
+
+
+def email_sending_configured() -> bool:
+    return bool(os.environ.get("RESEND_API_KEY") and os.environ.get("RESEND_FROM"))
+
+
+def _code_hash(email: str, code: str) -> str:
+    import hashlib
+    return hashlib.sha256(f"{email}:{code}".encode()).hexdigest()
+
+
+async def start_session(user_id: str) -> str:
+    token = f"ll_{uuid.uuid4().hex}{uuid.uuid4().hex}"
+    await db.user_sessions.insert_one({
+        "session_token": token, "user_id": user_id,
+        "expires_at": now_utc() + timedelta(days=SESSION_DAYS), "created_at": now_utc(),
+    })
+    return token
+
+
+async def find_or_create_user(email: str, name: str = "", extra: Optional[dict] = None) -> dict:
+    """Same e-mail = same account, whichever way someone signs in (Google, e-mail code, Apple)."""
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        if extra:
+            await db.users.update_one({"user_id": existing["user_id"]}, {"$set": extra})
+        return existing
+    user = {
+        "user_id": f"user_{uuid.uuid4().hex[:12]}", "email": email, "name": name, "picture": "",
+        "account_type": "user", "onboarded": False, "created_at": now_utc().isoformat(), **(extra or {}),
+    }
+    await db.users.insert_one(dict(user))
+    return user
+
+
+@api_router.get("/auth/methods")
+async def auth_methods():
+    """Which sign-in ways the app should offer (e-mail only when codes can be delivered)."""
+    return {"email": email_sending_configured() or dev_login_allowed(), "apple": True, "google": True}
+
+
+class EmailStart(BaseModel):
+    email: str
+
+
+class EmailVerify(BaseModel):
+    email: str
+    code: str
+
+
+def normalize_email(raw: str) -> str:
+    email = (raw or "").strip().lower()
+    if len(email) > 254 or not EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail={"code": "invalid_email", "message": "Invalid e-mail address"})
+    return email
+
+
+async def send_login_email(email: str, code: str, lang: str):
+    de = lang == "de"
+    subject = f"{code} ist dein LocalLoop-Code" if de else f"{code} is your LocalLoop code"
+    text = (f"Dein Anmeldecode für LocalLoop: {code}\n\nEr ist 10 Minuten gültig. Wenn du das nicht warst, ignoriere diese E-Mail."
+            if de else f"Your LocalLoop sign-in code: {code}\n\nIt is valid for 10 minutes. If this wasn't you, ignore this e-mail.")
+    big = '<b style="font-size:22px;letter-spacing:4px">' + code + "</b>"
+    lines = text.splitlines()
+    html = "<p>" + lines[0].replace(code, big) + "</p><p>" + lines[2] + "</p>"
+    async with httpx.AsyncClient(timeout=15) as hc:
+        resp = await hc.post("https://api.resend.com/emails", headers={"Authorization": f"Bearer {os.environ['RESEND_API_KEY']}"},
+                             json={"from": os.environ["RESEND_FROM"], "to": [email], "subject": subject, "text": text, "html": html})
+    if resp.status_code >= 300:
+        logger.warning(f"resend failed: {resp.status_code} {resp.text[:200]}")
+        raise HTTPException(status_code=502, detail={"code": "email_failed", "message": "The e-mail could not be sent"})
+
+
+@api_router.post("/auth/email/start")
+async def email_start(body: EmailStart, lang: str = "de"):
+    """Send a 6-digit sign-in code. Works as sign-up too: an unknown address gets a new account on verify."""
+    email = normalize_email(body.email)
+    if not email_sending_configured() and not dev_login_allowed():
+        raise HTTPException(status_code=503, detail={"code": "email_unavailable", "message": "E-mail sign-in is not set up"})
+    now = now_utc()
+    recent = await db.email_codes.count_documents({"email": email, "created_at": {"$gte": (now - timedelta(minutes=15)).isoformat()}})
+    if recent >= EMAIL_CODES_PER_15MIN:
+        raise HTTPException(status_code=429, detail={"code": "too_many_codes", "message": "Too many codes, try again later"})
+    code = f"{random.SystemRandom().randint(0, 999999):06d}"
+    await db.email_codes.insert_one({
+        "email": email, "code_hash": _code_hash(email, code), "tries": 0, "used": False,
+        "created_at": now.isoformat(), "expires_at": (now + EMAIL_CODE_TTL).isoformat(),
+    })
+    if email_sending_configured():
+        await send_login_email(email, code, lang)
+        return {"sent": True}
+    return {"sent": True, "dev_code": code}  # preview without e-mail provider: the app shows the code
+
+
+@api_router.post("/auth/email/verify")
+async def email_verify(body: EmailVerify):
+    email = normalize_email(body.email)
+    code = re.sub(r"\D", "", body.code or "")
+    now = now_utc()
+    docs = await db.email_codes.find({"email": email, "used": False}).sort("created_at", -1).to_list(1)
+    doc = docs[0] if docs else None
+    if not doc or doc["expires_at"] < now.isoformat():
+        raise HTTPException(status_code=400, detail={"code": "code_expired", "message": "Code expired, request a new one"})
+    if doc.get("tries", 0) >= EMAIL_CODE_MAX_TRIES:
+        raise HTTPException(status_code=429, detail={"code": "too_many_tries", "message": "Too many attempts, request a new code"})
+    if doc["code_hash"] != _code_hash(email, code):
+        await db.email_codes.update_one({"_id": doc["_id"]}, {"$inc": {"tries": 1}})
+        raise HTTPException(status_code=400, detail={"code": "wrong_code", "message": "Wrong code"})
+    await db.email_codes.update_many({"email": email}, {"$set": {"used": True}})
+    user = await find_or_create_user(email, extra={"email_verified": True})
+    token = await start_session(user["user_id"])
+    return {"user": await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0}), "session_token": token}
+
+
+class AppleSignIn(BaseModel):
+    identity_token: str
+    full_name: str = ""  # Apple sends the name only on the very first sign-in
+
+
+def verify_apple_token(token: str) -> dict:
+    global _apple_jwks
+    import jwt
+    if _apple_jwks is None:
+        _apple_jwks = jwt.PyJWKClient(f"{APPLE_ISSUER}/auth/keys", cache_keys=True)
+    audiences = [a.strip() for a in os.environ.get(
+        "APPLE_AUDIENCES", "host.exp.Exponent,com.emergent.mapeventshub.ywobzy").split(",") if a.strip()]
+    try:
+        key = _apple_jwks.get_signing_key_from_jwt(token).key
+        return jwt.decode(token, key, algorithms=["RS256"], audience=audiences, issuer=APPLE_ISSUER)
+    except Exception as e:
+        logger.info(f"apple token rejected: {e}")
+        raise HTTPException(status_code=401, detail={"code": "apple_invalid", "message": "Apple sign-in could not be verified"})
+
+
+@api_router.post("/auth/apple")
+async def apple_sign_in(body: AppleSignIn):
+    claims = verify_apple_token(body.identity_token)
+    sub = claims.get("sub")
+    if not sub:
+        raise HTTPException(status_code=401, detail={"code": "apple_invalid", "message": "Apple sign-in could not be verified"})
+    name = " ".join(body.full_name.split())[:80]
+    user = await db.users.find_one({"apple_sub": sub}, {"_id": 0})
+    if not user:
+        email = (claims.get("email") or "").lower() or f"{sub}@apple.localloop.app"
+        user = await find_or_create_user(email, name, extra={"apple_sub": sub})
+    if name and not user.get("name"):
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"name": name}})
+    token = await start_session(user["user_id"])
+    return {"user": await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0}), "session_token": token}
+
+
 class DevSessionBody(BaseModel):
     alias: str = ""  # optional: separate demo users (demo+<alias>@localloop.app), e.g. host + guest in tests
 
@@ -857,6 +1020,7 @@ async def delete_profile(user=Depends(get_current_user)):
     await db.reports.delete_many({"reporter_id": uid})  # reports *about* this user stay for moderation
     await db.notifications.delete_many({"user_id": uid})
     await db.chat_hidden.delete_many({"user_id": uid})
+    await db.email_codes.delete_many({"email": user.get("email", "")})
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
     return {"ok": True}
@@ -1813,6 +1977,8 @@ async def seed_and_index():
     await db.notifications.create_index([("user_id", 1), ("created_at", -1)])
     await db.notifications.create_index([("user_id", 1), ("read_at", 1)])
     await db.chat_hidden.create_index([("user_id", 1), ("event_id", 1)], unique=True)
+    await db.email_codes.create_index([("email", 1), ("created_at", -1)])
+    await db.users.create_index("apple_sub", sparse=True)
     SEED_VERSION = 2
     meta = await db.meta.find_one({"key": "seed_version"})
     current_version = (meta or {}).get("value", 0)
@@ -1839,7 +2005,9 @@ async def seed_and_index():
         for v in KA_VENUES:
             v = dict(v)
             hour = v.pop("hour"); minute = v.pop("minute"); in_days = v.pop("in_days", 1)
-            st = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=in_days)
+            # seed times are Karlsruhe wall-clock times ("Every Friday at 20:00")
+            day = (event_time.to_local(now) + timedelta(days=in_days)).date()
+            st = event_time.from_local(datetime.combine(day, datetime.min.time()).replace(hour=hour, minute=minute))
             v["banner_url"] = v["image_url"]
             ev = Event(**v, start_time=st.isoformat(), verified=True, created_by="seed_business")
             await db.events.insert_one(ev.dict())
@@ -1855,6 +2023,18 @@ async def seed_and_index():
                     "created_at": (now + timedelta(minutes=j)).isoformat()})
         logger.info("Seeded %d Karlsruhe venues", len(KA_VENUES))
         await db.meta.update_one({"key": "seed_version"}, {"$set": {"key": "seed_version", "value": SEED_VERSION}}, upsert=True)
+        await db.meta.update_one({"key": "seed_tz_fixed"}, {"$set": {"key": "seed_tz_fixed", "value": True}}, upsert=True)
+    # One-time fix: demo venues seeded before 2026-10 stored their local times as UTC (20:00 -> 22:00 in summer).
+    if not await db.meta.find_one({"key": "seed_tz_fixed"}):
+        for ev in await db.events.find({"created_by": DEMO_HOST}, {"_id": 0, "id": 1, "start_time": 1, "end_time": 1}).to_list(500):
+            upd = {}
+            for f in ("start_time", "end_time"):
+                t = parse_iso(ev.get(f))
+                if t:
+                    upd[f] = event_time.from_local(t.astimezone(timezone.utc).replace(tzinfo=None)).isoformat()
+            if upd:
+                await db.events.update_one({"id": ev["id"]}, {"$set": upd})
+        await db.meta.update_one({"key": "seed_tz_fixed"}, {"$set": {"key": "seed_tz_fixed", "value": True}}, upsert=True)
     await roll_demo_events(force=True)
 
 

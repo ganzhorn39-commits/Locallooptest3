@@ -314,6 +314,13 @@ export const api = {
   createAuthSession: (session_id: string) =>
     req(`/auth/session`, { method: "POST", body: JSON.stringify({ session_id }) }),
   devSession: () => req(`/auth/dev-session`, { method: "POST" }),
+  authMethods: (): Promise<{ email: boolean; apple: boolean; google: boolean }> => req(`/auth/methods`),
+  emailStart: (email: string, lang: string): Promise<{ sent: boolean; dev_code?: string }> =>
+    req(`/auth/email/start?lang=${lang}`, { method: "POST", body: JSON.stringify({ email }) }),
+  emailVerify: (email: string, code: string): Promise<{ user: any; session_token: string }> =>
+    req(`/auth/email/verify`, { method: "POST", body: JSON.stringify({ email, code }) }),
+  appleSignIn: (identity_token: string, full_name: string): Promise<{ user: any; session_token: string }> =>
+    req(`/auth/apple`, { method: "POST", body: JSON.stringify({ identity_token, full_name }) }),
   me: () => req(`/auth/me`),
   logout: () => req(`/auth/logout`, { method: "POST" }),
 };

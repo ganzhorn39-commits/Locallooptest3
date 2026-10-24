@@ -4,6 +4,7 @@ import { BlurView } from "expo-blur";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import * as WebBrowser from "expo-web-browser";
 import * as Linking from "expo-linking";
+import { router } from "expo-router";
 import { storage } from "@/src/utils/storage";
 import { api, TOKEN_KEY } from "@/src/api/client";
 import { useTheme } from "@/src/theme/theme";
@@ -35,7 +36,8 @@ type User = {
 type AuthState = { user: User | null; loading: boolean; loggingIn: boolean; guest: boolean };
 
 type Ctx = AuthState & {
-  login: () => Promise<void>;
+  login: () => Promise<void>; // Google (Emergent auth)
+  signInWith: (res: { user: User; session_token: string }) => Promise<void>; // e-mail code / Apple
   devLogin: () => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -122,6 +124,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [processSessionId]);
 
+  const signInWith = useCallback(async (res: { user: User; session_token: string }) => {
+    await storage.secureSet(TOKEN_KEY, res.session_token);
+    await storage.removeItem(GUEST_KEY);
+    setGuest(false);
+    setUser(res.user);
+  }, []);
+
   const devLogin = useCallback(async () => {
     setLoggingIn(true);
     try {
@@ -160,12 +169,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const promptLogin = useCallback(() => setWallVisible(true), []);
 
   return (
-    <AuthCtx.Provider value={{ user, loading, loggingIn, guest, login, devLogin, logout, refresh, enterGuest, promptLogin }}>
+    <AuthCtx.Provider value={{ user, loading, loggingIn, guest, login, signInWith, devLogin, logout, refresh, enterGuest, promptLogin }}>
       {children}
       <LoginWall
         visible={wallVisible}
         onClose={() => setWallVisible(false)}
-        onLogin={() => { setWallVisible(false); login(); }}
+        onLogin={() => { setWallVisible(false); router.push("/login"); }} // choose e-mail / Apple / Google there
       />
     </AuthCtx.Provider>
   );
