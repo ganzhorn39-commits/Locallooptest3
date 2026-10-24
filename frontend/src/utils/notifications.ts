@@ -43,6 +43,8 @@ export function notificationText(n: AppNotification, t: T, lang: string): { titl
         : { title: fill(t("notif_chat_one"), p), body: p.text };
     case "reminder":
       return { title: fill(t("notif_reminder"), { ...p, when: startsWhen(p.start_time, t, lang) }) };
+    case "followed_event":
+      return { title: fill(t("notif_followed_event"), p), body: p.start_time ? startsWhen(p.start_time, t, lang) : undefined };
     default:
       return { title: fill(t(`notif_${n.type}`), p) };
   }
@@ -56,4 +58,6 @@ export const NOTIFICATION_ICON: Record<string, { icon: string; tone: "brand" | "
   event_updated: { icon: "create", tone: "warning" },
   chat: { icon: "chatbubbles", tone: "brand" },
   reminder: { icon: "alarm", tone: "brand" },
+  new_follower: { icon: "person-add", tone: "accent" },
+  followed_event: { icon: "sparkles", tone: "brand" },
 };

@@ -3,10 +3,11 @@ import { isAgeRestricted } from "@/src/constants/categories";
 import { DateFilter, eventWindow, hasEnded, isLiveNow, matchesDate } from "@/src/utils/eventTime";
 
 // Quick chips under the search field. Date ("Heute") and distance live in the filter sheet.
-export type QuickKey = "live" | "free" | "deals" | "outdoor";
+export type QuickKey = "live" | "following" | "free" | "deals" | "outdoor";
 
 export const QUICK_FILTERS: { key: QuickKey; icon: string }[] = [
   { key: "live", icon: "radio-outline" },
+  { key: "following", icon: "people-outline" },
   { key: "free", icon: "pricetag" },
   { key: "deals", icon: "gift-outline" },
   { key: "outdoor", icon: "leaf" },
@@ -49,6 +50,7 @@ export function filterEvents(
       if (!hay.includes(q)) return false;
     }
     if (quick.includes("live") && !isLiveNow(e, now)) return false;
+    if (quick.includes("following") && !e.followed_host && !e.friends_going) return false;
     if (quick.includes("free") && e.tickets_url) return false;
     if (quick.includes("deals") && !dealLeft(e)) return false;
     if (quick.includes("outdoor") && !(e.category === "outdoor" || e.category === "sports")) return false;

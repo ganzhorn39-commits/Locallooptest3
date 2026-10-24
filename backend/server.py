@@ -66,6 +66,10 @@ NOTIF_TEXTS = {
     "event_updated": {"de": ("Event geändert ✏️", "„{event_title}“ hat eine neue {what_de}."),
                       "en": ("Event updated ✏️", "\"{event_title}\" has a new {what_en}.")},
     "chat": {"de": ("{user_name} · {event_title}", "{text}"), "en": ("{user_name} · {event_title}", "{text}")},
+    "new_follower": {"de": ("Neue Followerin / neuer Follower 👋", "{user_name} folgt dir jetzt"),
+                     "en": ("New follower 👋", "{user_name} is now following you")},
+    "followed_event": {"de": ("Neues Event von {host_name} ✨", "„{event_title}“ – {when}"),
+                       "en": ("New event by {host_name} ✨", "\"{event_title}\" – {when}")},
 }
 WHAT_TEXT = {"time": ("Uhrzeit", "time"), "place": ("Adresse", "place"), "time_place": ("Zeit und Adresse", "time and place")}
 REMINDER_WINDOW = timedelta(hours=24)
@@ -641,6 +645,19 @@ async def list_events(category: Optional[str] = None, user=Depends(get_optional_
     saves = await counts_by_event(db.saves, {"event_id": {"$in": ids}})
     for d in docs:
         d["trend_score"] = checkins.get(d["id"], 0) + saves.get(d["id"], 0)
+    # "Leute, denen du folgst": followed hosts + public check-ins of followed people
+    mine = await following_ids(user)
+    if mine:
+        going: dict = {}
+        for c in await db.checkins.find({"event_id": {"$in": ids}, "user_id": {"$in": list(mine)}, "visibility": {"$in": ["public", None]}},
+                                        {"_id": 0, "event_id": 1, "user_id": 1}).to_list(5000):
+            going.setdefault(c["event_id"], []).append(c["user_id"])
+        names = {u["user_id"]: u.get("name") or "" for u in await db.users.find(
+            {"user_id": {"$in": list({i for v in going.values() for i in v})}}, {"_id": 0, "user_id": 1, "name": 1}).to_list(None)}
+        for d in docs:
+            d["followed_host"] = d.get("created_by") in mine
+            d["friends_going"] = len(going.get(d["id"], []))
+            d["friends_names"] = [names.get(i, "") for i in going.get(d["id"], [])][:3]
     return [with_live_count(d) for d in await attach_hosts(docs)]
 
 
@@ -711,6 +728,17 @@ async def create_event(payload: EventCreate, user=Depends(get_current_user)):
     data["offer_title"], data["offer_limit"] = await check_offer(user, data["offer_title"], data["offer_limit"])
     event = Event(**data, created_by=user["user_id"])
     await db.events.insert_one(event.dict())
+    try:
+        fans = [f["follower_id"] for f in await db.follows.find({"followee_id": user["user_id"]}, {"_id": 0, "follower_id": 1}).to_list(5000)]
+        if fans:
+            start = parse_iso(event.start_time)
+            local = event_time.to_local(start) if start else None
+            await notify(fans, "followed_event", {
+                "host_name": user.get("business_name") or user.get("name") or "", "event_title": event.title,
+                "start_time": event.start_time, "when": local.strftime("%d.%m. %H:%M") if local else "",
+            }, f"/event/{event.id}", event_id=event.id, actor_id=user["user_id"])
+    except Exception as e:
+        logger.warning(f"follower notify failed (non-blocking): {e}")
     return with_live_count(event.dict())
 
 
@@ -1009,10 +1037,92 @@ async def get_public_user(user_id: str, viewer=Depends(get_optional_user)):
          "account_type": 1, "verified": 1, "identity_verified": 1, "birthdate": 1, "business_name": 1,
          "business_category": 1, "business_address": 1, "business_website": 1, "business_instagram": 1},
     )
-    if not u:
+    if not u or u.get("banned"):
         raise HTTPException(status_code=404, detail="User not found")
     u["blocked"] = user_id in await blocked_ids(viewer)
+    u["followers_count"] = await db.follows.count_documents({"followee_id": user_id})
+    u["following_count"] = await db.follows.count_documents({"follower_id": user_id})
+    vid = viewer["user_id"] if viewer else None
+    u["is_following"] = bool(vid and await db.follows.find_one({"follower_id": vid, "followee_id": user_id}))
+    u["follows_you"] = bool(vid and await db.follows.find_one({"follower_id": user_id, "followee_id": vid}))
     return u
+
+
+# ----------------------------- Followers -----------------------------
+FOLLOW_FIELDS = {"_id": 0, "user_id": 1, "name": 1, "picture": 1, "account_type": 1, "business_name": 1,
+                 "business_category": 1, "verified": 1, "identity_verified": 1, "banned": 1}
+
+
+async def following_ids(user: Optional[dict]) -> set:
+    if not user:
+        return set()
+    rows = await db.follows.find({"follower_id": user["user_id"]}, {"_id": 0, "followee_id": 1}).to_list(5000)
+    return {r["followee_id"] for r in rows}
+
+
+@api_router.post("/users/{user_id}/follow")
+async def toggle_follow(user_id: str, user=Depends(get_current_user)):
+    """Follow / unfollow a person or a venue. Not possible while one of you has blocked the other."""
+    uid = user["user_id"]
+    if user_id == uid:
+        raise HTTPException(status_code=400, detail="You can't follow yourself")
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "user_id": 1, "banned": 1})
+    if not target or target.get("banned"):
+        raise HTTPException(status_code=404, detail="User not found")
+    res = await db.follows.delete_one({"follower_id": uid, "followee_id": user_id})
+    following = False
+    if not res.deleted_count:
+        if await db.blocks.find_one({"$or": [{"user_id": uid, "blocked_id": user_id}, {"user_id": user_id, "blocked_id": uid}]}):
+            raise HTTPException(status_code=403, detail={"code": "blocked", "message": "Not possible while blocked"})
+        try:
+            await db.follows.insert_one({"follower_id": uid, "followee_id": user_id, "at": now_utc().isoformat()})
+        except DuplicateKeyError:
+            pass
+        following = True
+        # one "new follower" note per pair (following again after unfollowing doesn't ping twice)
+        if not await db.notifications.find_one({"user_id": user_id, "type": "new_follower", "params.user_id": uid}):
+            try:
+                await notify([user_id], "new_follower", {"user_name": user.get("business_name") or user.get("name") or "Someone",
+                                                         "user_id": uid}, f"/user/{uid}", actor_id=uid)
+            except Exception as e:
+                logger.warning(f"follow notify failed (non-blocking): {e}")
+    return {"following": following, "followers_count": await db.follows.count_documents({"followee_id": user_id})}
+
+
+async def follow_list(user_id: str, field: str, other: str, viewer: Optional[dict]):
+    rows = await db.follows.find({field: user_id}, {"_id": 0}).sort("at", -1).to_list(1000)
+    ids = [r[other] for r in rows]
+    hidden = await blocked_ids(viewer)
+    users = {u["user_id"]: u for u in await db.users.find({"user_id": {"$in": ids}}, FOLLOW_FIELDS).to_list(None)}
+    mine = await following_ids(viewer)
+    out = []
+    for i in ids:
+        u = users.get(i)
+        if not u or u.get("banned") or i in hidden:
+            continue
+        u.pop("banned", None)
+        out.append({**u, "is_following": i in mine, "is_me": bool(viewer and viewer["user_id"] == i)})
+    return out
+
+
+@api_router.get("/users/{user_id}/followers")
+async def followers(user_id: str, viewer=Depends(get_optional_user)):
+    return await follow_list(user_id, "followee_id", "follower_id", viewer)
+
+
+@api_router.get("/users/{user_id}/following")
+async def following(user_id: str, viewer=Depends(get_optional_user)):
+    return await follow_list(user_id, "follower_id", "followee_id", viewer)
+
+
+@api_router.get("/users/{user_id}/events")
+async def user_events(user_id: str):
+    """Coming (and running) events a person or venue hosts, soonest first – shown on their profile."""
+    now = now_utc()
+    docs = await db.events.find({"created_by": user_id, "status": {"$nin": ["cancelled", "removed"]}}, {"_id": 0}).to_list(200)
+    docs = [d for d in docs if lifecycle(d, now) in ("upcoming", "live")]
+    docs = [with_live_count(d) for d in await attach_hosts(docs)]
+    return sorted(docs, key=lambda d: d["next_occurrence"] or "")[:30]
 
 
 @api_router.delete("/profile")
@@ -1042,6 +1152,7 @@ async def delete_profile(user=Depends(get_current_user)):
     await db.reports.delete_many({"reporter_id": uid})  # reports *about* this user stay for moderation
     await db.notifications.delete_many({"user_id": uid})
     await db.chat_hidden.delete_many({"user_id": uid})
+    await db.follows.delete_many({"$or": [{"follower_id": uid}, {"followee_id": uid}]})
     await db.email_codes.delete_many({"email": user.get("email", "")})
     await db.user_sessions.delete_many({"user_id": uid})
     await db.users.delete_one({"user_id": uid})
@@ -1096,6 +1207,7 @@ async def participants(event_id: str, user=Depends(get_current_user)):
     users = []
     requester = user["user_id"]
     hidden = await blocked_ids(user)
+    mine = await following_ids(user)
     for d in docs:
         if d["user_id"] in hidden:  # still counted, just not shown to the person who blocked them
             continue
@@ -1106,6 +1218,7 @@ async def participants(event_id: str, user=Depends(get_current_user)):
             if u:
                 u["live"] = bool(d.get("at_venue"))
                 u["anonymous"] = False
+                u["following"] = d["user_id"] in mine
                 users.append(u)
         else:
             # Anonymous / friends-only (to non-friends): counted but shown as a placeholder.
@@ -1381,6 +1494,7 @@ async def toggle_block(user_id: str, user=Depends(get_current_user)):
         await db.blocks.insert_one({"user_id": uid, "blocked_id": user_id, "at": now_utc().isoformat()})
     except DuplicateKeyError:
         pass
+    await db.follows.delete_many({"$or": [{"follower_id": uid, "followee_id": user_id}, {"follower_id": user_id, "followee_id": uid}]})
     return {"blocked": True}
 
 
@@ -2060,6 +2174,8 @@ async def seed_and_index():
     await db.notifications.create_index([("user_id", 1), ("read_at", 1)])
     await db.chat_hidden.create_index([("user_id", 1), ("event_id", 1)], unique=True)
     await db.email_codes.create_index([("email", 1), ("created_at", -1)])
+    await db.follows.create_index([("follower_id", 1), ("followee_id", 1)], unique=True)
+    await db.follows.create_index("followee_id")
     await db.users.create_index("apple_sub", sparse=True)
     SEED_VERSION = 2
     meta = await db.meta.find_one({"key": "seed_version"})

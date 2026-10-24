@@ -11,6 +11,7 @@ import { useAuth } from "@/src/auth/AuthContext";
 import { api, EventItem } from "@/src/api/client";
 import { categoryLabel, categoryMeta } from "@/src/constants/categories";
 import { formatWhen, hasEnded, isLiveNow, whenLabel } from "@/src/utils/eventTime";
+import { friendsGoingText } from "@/src/utils/social";
 import DealCard from "@/src/components/DealCard";
 import ActionSheet from "@/src/components/ActionSheet";
 import ReportSheet from "@/src/components/ReportSheet";
@@ -46,6 +47,7 @@ export default function EventDetail() {
   const isHost = !!user && e.created_by === user.user_id;
   const canEdit = isHost && !cancelled;
   const shown = (people?.participants || []).slice(0, 6);
+  const friends = (people?.participants || []).filter((p) => p.following && !p.anonymous);
 
   const share = async () => {
     try {
@@ -134,6 +136,14 @@ export default function EventDetail() {
           {!!e.description && <Text style={[styles.desc, { color: colors.onSurfaceSecondary }]}>{e.description}</Text>}
           {!cancelled && <DealCard key={e.id} event={e} />}
 
+          {friends.length > 0 && (
+            <View testID="event-detail-friends" style={styles.row}>
+              <Ionicons name="people" size={18} color={colors.accent} />
+              <Text style={[styles.rowText, { color: colors.onSurfaceSecondary }]}>
+                {friendsGoingText(friends.map((p) => (p.name || "").split(" ")[0]), friends.length, t)}
+              </Text>
+            </View>
+          )}
           <Pressable testID="event-detail-participants" onPress={() => router.push(`/participants/${id}`)} style={[styles.linkBtn, { backgroundColor: colors.surfaceTertiary, borderColor: colors.border }]}>
             {shown.length > 0 ? (
               <View style={styles.avatars} testID="event-detail-avatars">

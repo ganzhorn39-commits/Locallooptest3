@@ -14,7 +14,8 @@ async function authHeaders(): Promise<Record<string, string>> {
 export type ApiError = Error & { status?: number; detail?: any };
 
 export type NotificationType =
-  | "join_request" | "request_approved" | "request_rejected" | "event_cancelled" | "event_updated" | "chat" | "reminder";
+  | "join_request" | "request_approved" | "request_rejected" | "event_cancelled" | "event_updated" | "chat" | "reminder"
+  | "new_follower" | "followed_event";
 
 // One entry of the notification center; the app builds the text from `type` + `params`.
 export type AppNotification = {
@@ -129,6 +130,15 @@ export type EventItem = {
   host_name?: string;
   host_is_business?: boolean;
   trend_score?: number;
+  followed_host?: boolean; // the viewer follows the host
+  friends_going?: number; // people the viewer follows who joined (public check-ins)
+  friends_names?: string[];
+};
+
+// A person or venue in follower / following lists.
+export type FollowUser = {
+  user_id: string; name?: string; picture?: string; account_type?: string; business_name?: string;
+  verified?: boolean; identity_verified?: boolean; is_following: boolean; is_me: boolean;
 };
 
 // Host dashboard (GET /my/dashboard) — real numbers only, no simulated live counts.
@@ -291,6 +301,10 @@ export const api = {
 
   // Public profile + account
   getUser: (id: string): Promise<any> => req(`/users/${id}`),
+  toggleFollow: (id: string): Promise<{ following: boolean; followers_count: number }> => req(`/users/${id}/follow`, { method: "POST" }),
+  followers: (id: string): Promise<FollowUser[]> => req(`/users/${id}/followers`),
+  following: (id: string): Promise<FollowUser[]> => req(`/users/${id}/following`),
+  userEvents: (id: string): Promise<EventItem[]> => req(`/users/${id}/events`),
   deleteAccount: () => req(`/profile`, { method: "DELETE" }),
 
   // Notification center

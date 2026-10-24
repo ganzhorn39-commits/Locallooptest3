@@ -7,6 +7,7 @@ import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
 import { categoryLabel, categoryMeta } from "@/src/constants/categories";
 import { hasEnded, isLiveNow, recurrenceText, whenLabel } from "@/src/utils/eventTime";
+import { friendsGoingText } from "@/src/utils/social";
 import type { EventItem } from "@/src/api/client";
 
 export default function EventCard({
@@ -85,6 +86,14 @@ export default function EventCard({
             </Text>
           )}
         </View>
+        {(!!event.friends_going || event.followed_host) && (
+          <View style={styles.metaRow} testID={`event-card-friends-${event.id}`}>
+            <Ionicons name={event.friends_going ? "people" : "star"} size={14} color={colors.accent} />
+            <Text style={[styles.friends, { color: colors.onSurfaceSecondary }]} numberOfLines={1}>
+              {event.friends_going ? friendsGoingText(event.friends_names || [], event.friends_going, t) : t("followed_host")}
+            </Text>
+          </View>
+        )}
       </View>
     </Pressable>
   );
@@ -109,6 +118,7 @@ const styles = StyleSheet.create({
   spots: { fontSize: 13, fontWeight: "700" },
   metaRow: { flexDirection: "row", alignItems: "center", gap: 5 },
   countdown: { fontSize: 13, fontWeight: "700" },
+  friends: { fontSize: 13, fontWeight: "600", flexShrink: 1 },
   dot: { fontSize: 13, marginHorizontal: 2 },
   addr: { fontSize: 13, flex: 1 },
 });

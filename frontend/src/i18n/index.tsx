@@ -216,6 +216,11 @@ const DICT: Record<Lang, Record<string, string>> = {
     sys_updated_time_place: "✏️ The host changed the time and place. Check the details before you go.",
     // stage 4: filters, event end, live, chats archive
     splash_slogan: "The city's pulse, on your map.",
+    quick_following: "Following", followers: "Followers", following_tab: "Following", follow: "Follow", following_btn: "Following",
+    follows_you: "Follows you", profile_events: "Upcoming events", no_followers: "No followers yet.", no_following: "Not following anyone yet.",
+    friends_going_one: "{a} is going", friends_going_two: "{a} and {b} are going", friends_going_more: "{a} and {n} others you follow are going",
+    followed_host: "You follow the host", notif_new_follower: "{user_name} is now following you",
+    notif_followed_event: "New event by {host_name}: “{event_title}”", events_count: "Events",
     moderation: "Moderation", moderation_queue: "Reported content", mod_empty: "Nothing reported – all good.",
     mod_type_message: "Message", mod_type_event: "Event", mod_type_user: "Profile", mod_reports: "{n}× reported", mod_by: "by {name}",
     mod_dismiss: "Ignore", mod_remove_message: "Delete message", mod_remove_event: "Take event down", mod_ban: "Block account",
@@ -444,6 +449,11 @@ const DICT: Record<Lang, Record<string, string>> = {
     sys_updated_time_place: "✏️ Der Veranstalter hat Zeit und Ort geändert. Schau vor dem Losgehen nochmal in die Details.",
     // Etappe 4: Filter, Event-Ende, Live, Chat-Archiv
     splash_slogan: "Der Puls der Stadt – auf deiner Karte.",
+    quick_following: "Gefolgt", followers: "Follower", following_tab: "Folgt", follow: "Folgen", following_btn: "Folge ich",
+    follows_you: "Folgt dir", profile_events: "Kommende Events", no_followers: "Noch keine Follower.", no_following: "Folgt noch niemandem.",
+    friends_going_one: "{a} ist dabei", friends_going_two: "{a} und {b} sind dabei", friends_going_more: "{a} und {n} weitere, denen du folgst, sind dabei",
+    followed_host: "Du folgst dem Veranstalter", notif_new_follower: "{user_name} folgt dir jetzt",
+    notif_followed_event: "Neues Event von {host_name}: „{event_title}“", events_count: "Events",
     moderation: "Moderation", moderation_queue: "Gemeldete Inhalte", mod_empty: "Nichts gemeldet – alles gut.",
     mod_type_message: "Nachricht", mod_type_event: "Event", mod_type_user: "Profil", mod_reports: "{n}× gemeldet", mod_by: "von {name}",
     mod_dismiss: "Ignorieren", mod_remove_message: "Nachricht löschen", mod_remove_event: "Event entfernen", mod_ban: "Konto sperren",

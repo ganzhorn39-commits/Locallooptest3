@@ -12,6 +12,7 @@ import { useI18n } from "@/src/i18n";
 import { api, Dashboard, profanityWords } from "@/src/api/client";
 import { getAge } from "@/src/utils/age";
 import { pickImage } from "@/src/utils/pickImage";
+import FollowStats from "@/src/components/FollowStats";
 import CategoryWheel from "@/src/components/CategoryWheel";
 import { CATEGORIES, CategoryKey } from "@/src/constants/categories";
 
@@ -39,13 +40,19 @@ export default function ProfileScreen({ showBack }: { showBack?: boolean }) {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   const [hosting, setHosting] = useState<Dashboard["totals"] | null>(null);
+  const [counts, setCounts] = useState<{ followers: number; following: number } | null>(null);
 
   // Hosting summary for the dashboard entry (refreshed whenever the profile tab gains focus).
   useFocusEffect(useCallback(() => {
     let active = true;
     api.myDashboard().then((d) => { if (active) setHosting(d.totals); }).catch(() => {});
+    if (user) {
+      api.getUser(user.user_id).then((u) => {
+        if (active) setCounts({ followers: u.followers_count || 0, following: u.following_count || 0 });
+      }).catch(() => {});
+    }
     return () => { active = false; };
-  }, []));
+  }, [user]));
 
   const inputStyle = [styles.input, { backgroundColor: colors.surfaceTertiary, color: colors.onSurface, borderColor: colors.border }];
 
@@ -126,6 +133,7 @@ export default function ProfileScreen({ showBack }: { showBack?: boolean }) {
               </View>
             );
           })()}
+          {!!user && !!counts && <FollowStats userId={user.user_id} followers={counts.followers} following={counts.following} />}
           {!isBiz && !!birthText && (
             <View testID="birthdate-locked" style={[styles.birthRow, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
               <Ionicons name="lock-closed" size={13} color={colors.onSurfaceTertiary} />

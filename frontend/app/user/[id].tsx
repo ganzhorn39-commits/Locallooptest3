@@ -9,9 +9,12 @@ import * as Haptics from "expo-haptics";
 import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
 import { useAuth } from "@/src/auth/AuthContext";
-import { api } from "@/src/api/client";
+import { api, EventItem } from "@/src/api/client";
+import { whenLabel } from "@/src/utils/eventTime";
+import FollowButton from "@/src/components/FollowButton";
+import FollowStats from "@/src/components/FollowStats";
 import { getAge } from "@/src/utils/age";
-import { CATEGORIES } from "@/src/constants/categories";
+import { CATEGORIES, categoryMeta } from "@/src/constants/categories";
 import ActionSheet from "@/src/components/ActionSheet";
 import ReportSheet from "@/src/components/ReportSheet";
 
@@ -21,7 +24,7 @@ const openLink = async (url: string) => {
 
 export default function PublicProfile() {
   const { colors } = useTheme();
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -31,15 +34,19 @@ export default function PublicProfile() {
   const [blocked, setBlocked] = useState(false);
   const [reporting, setReporting] = useState(false);
   const [confirmBlock, setConfirmBlock] = useState(false);
+  const [events, setEvents] = useState<EventItem[]>([]);
+  const [followers, setFollowers] = useState(0);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const data = await api.getUser(id);
-        setU(data);
-        setBlocked(!!data.blocked);
-      } catch {} finally { setLoading(false); }
-    })();
+    let alive = true;
+    api.getUser(id).then((data) => {
+      if (!alive) return;
+      setU(data);
+      setBlocked(!!data.blocked);
+      setFollowers(data.followers_count || 0);
+    }).catch(() => {}).finally(() => { if (alive) setLoading(false); });
+    api.userEvents(id).then((e) => { if (alive) setEvents(e); }).catch(() => {});
+    return () => { alive = false; };
   }, [id]);
 
   const isMe = !!user && user.user_id === id;
@@ -82,6 +89,15 @@ export default function PublicProfile() {
             <Text style={styles.catPillText}>{bizCat.emoji} {t(`cat_${bizCat.key}`)}</Text>
           </View>
         )}
+        {!!u?.follows_you && !isMe && (
+          <View testID="follows-you" style={[styles.followsYou, { backgroundColor: colors.surfaceTertiary }]}>
+            <Text style={[styles.followsYouText, { color: colors.onSurfaceSecondary }]}>{t("follows_you")}</Text>
+          </View>
+        )}
+        {!!u && <FollowStats userId={id} followers={followers} following={u.following_count || 0} events={events.length} />}
+        {!isMe && !!u && !blocked && (
+          <FollowButton key={id} testID="follow-button" userId={id} following={!!u.is_following} onChange={(_, n) => setFollowers(n)} />
+        )}
         {!!u?.bio && <Text style={[styles.bio, { color: colors.onSurfaceSecondary }]}>{u.bio}</Text>}
         {isBiz && !!u?.business_address && (
           <View testID="user-business-address" style={styles.infoRow}>
@@ -106,6 +122,26 @@ export default function PublicProfile() {
           <View testID="user-blocked-note" style={[styles.blockedNote, { borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}>
             <Ionicons name="ban" size={16} color={colors.error} />
             <Text style={[styles.blockedText, { color: colors.onSurfaceSecondary }]}>{t("blocked_note")}</Text>
+          </View>
+        )}
+
+        {events.length > 0 && (
+          <View style={styles.eventsBox} testID="profile-events">
+            <Text style={[styles.eventsTitle, { color: colors.onSurfaceTertiary }]}>{t("profile_events")}</Text>
+            {events.map((e) => {
+              const meta = categoryMeta(e.category);
+              return (
+                <Pressable key={e.id} testID={`profile-event-${e.id}`} onPress={() => router.push(`/event/${e.id}`)}
+                  style={[styles.eventRow, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
+                  <View style={[styles.eventIcon, { backgroundColor: meta.color }]}><Text style={{ fontSize: 18 }}>{e.emoji || meta.emoji}</Text></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.eventTitle, { color: colors.onSurface }]} numberOfLines={1}>{e.title}</Text>
+                    <Text style={[styles.eventWhen, { color: colors.brand }]} numberOfLines={1}>{whenLabel(e, t, lang)}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
+                </Pressable>
+              );
+            })}
           </View>
         )}
 
@@ -151,6 +187,14 @@ const styles = StyleSheet.create({
   infoRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   infoText: { fontSize: 14, fontWeight: "600" },
   actions: { flexDirection: "row", gap: 12, marginTop: 20 },
+  followsYou: { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 999 },
+  followsYouText: { fontSize: 12, fontWeight: "800" },
+  eventsBox: { alignSelf: "stretch", gap: 8, marginTop: 12 },
+  eventsTitle: { fontSize: 12, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.5 },
+  eventRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 10, borderRadius: 14, borderWidth: 1 },
+  eventIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+  eventTitle: { fontSize: 15, fontWeight: "800" },
+  eventWhen: { fontSize: 13, fontWeight: "700", marginTop: 1 },
   blockedNote: { flexDirection: "row", alignItems: "center", gap: 8, padding: 12, borderRadius: 12, borderWidth: 1, marginTop: 8 },
   blockedText: { fontSize: 13, flexShrink: 1, lineHeight: 18 },
   actionBtn: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 18, height: 46, borderRadius: 12, borderWidth: 1 },
