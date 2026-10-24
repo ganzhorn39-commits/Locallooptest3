@@ -216,6 +216,11 @@ const DICT: Record<Lang, Record<string, string>> = {
     sys_updated_time_place: "✏️ The host changed the time and place. Check the details before you go.",
     // stage 4: filters, event end, live, chats archive
     splash_slogan: "The city's pulse, on your map.",
+    moderation: "Moderation", moderation_queue: "Reported content", mod_empty: "Nothing reported – all good.",
+    mod_type_message: "Message", mod_type_event: "Event", mod_type_user: "Profile", mod_reports: "{n}× reported", mod_by: "by {name}",
+    mod_dismiss: "Ignore", mod_remove_message: "Delete message", mod_remove_event: "Take event down", mod_ban: "Block account",
+    mod_ban_title: "Block {name}?", mod_ban_body: "They can't sign in any more; their messages and events disappear.",
+    mod_banned: "blocked", mod_open_event: "Open event", err_banned: "This account has been blocked.",
     // stage 6: sign-in
     login_email: "Continue with e-mail", login_apple: "Continue with Apple", guest_prominent: "Continue as guest",
     acct_personal_p1: "Discover events on the map", acct_personal_p2: "Join, chat and meet people", acct_personal_p3: "Claim deals from venues",
@@ -439,6 +444,11 @@ const DICT: Record<Lang, Record<string, string>> = {
     sys_updated_time_place: "✏️ Der Veranstalter hat Zeit und Ort geändert. Schau vor dem Losgehen nochmal in die Details.",
     // Etappe 4: Filter, Event-Ende, Live, Chat-Archiv
     splash_slogan: "Der Puls der Stadt – auf deiner Karte.",
+    moderation: "Moderation", moderation_queue: "Gemeldete Inhalte", mod_empty: "Nichts gemeldet – alles gut.",
+    mod_type_message: "Nachricht", mod_type_event: "Event", mod_type_user: "Profil", mod_reports: "{n}× gemeldet", mod_by: "von {name}",
+    mod_dismiss: "Ignorieren", mod_remove_message: "Nachricht löschen", mod_remove_event: "Event entfernen", mod_ban: "Konto sperren",
+    mod_ban_title: "{name} sperren?", mod_ban_body: "Die Person kann sich nicht mehr anmelden; ihre Nachrichten und Events verschwinden.",
+    mod_banned: "gesperrt", mod_open_event: "Event öffnen", err_banned: "Dieses Konto wurde gesperrt.",
     // Etappe 6: Anmeldung
     login_email: "Mit E-Mail fortfahren", login_apple: "Mit Apple fortfahren", guest_prominent: "Als Gast fortfahren",
     acct_personal_p1: "Events auf der Karte entdecken", acct_personal_p2: "Mitmachen, chatten, Leute treffen", acct_personal_p3: "Deals von Lokalen sichern",

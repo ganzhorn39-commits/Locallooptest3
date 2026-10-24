@@ -22,7 +22,7 @@ const BG_URI =
   "https://images.unsplash.com/photo-1511632765486-a01980e01a18?auto=format&fit=crop&w=1000&q=80";
 
 type Method = "email" | "apple" | "google";
-const ERR_KEYS = ["invalid_email", "email_unavailable", "too_many_codes", "wrong_code", "code_expired", "too_many_tries", "email_failed"];
+const ERR_KEYS = ["invalid_email", "email_unavailable", "too_many_codes", "wrong_code", "code_expired", "too_many_tries", "email_failed", "banned"];
 
 export default function Login() {
   const { user, login, signInWith, devLogin, loggingIn, enterGuest } = useAuth();

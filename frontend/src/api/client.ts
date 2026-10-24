@@ -185,6 +185,13 @@ export type ChatSummary = {
   last_activity: string;
 };
 
+// One reported message / event / profile in the moderation queue (all reports about it combined).
+export type ModerationItem = {
+  id: string; target_type: ReportTarget; target_id: string; target_owner_id?: string; event_id?: string | null;
+  snapshot: string; reasons: ReportReason[]; notes: string[]; count: number; created_at: string;
+  owner_name: string; owner_banned: boolean;
+};
+
 export type DashboardRequest = {
   user_id: string;
   name?: string;
@@ -254,6 +261,9 @@ export const api = {
   mySaved: (): Promise<EventItem[]> => req(`/my/saved`),
   myAttending: (): Promise<EventItem[]> => req(`/my/attending`),
   myChats: (): Promise<ChatSummary[]> => req(`/my/chats`),
+  adminReports: (): Promise<ModerationItem[]> => req(`/admin/reports`),
+  moderate: (reportId: string, action: "dismiss" | "remove" | "ban") =>
+    req(`/admin/reports/${reportId}`, { method: "POST", body: JSON.stringify({ action }) }),
   hideChat: (eventId: string) => req(`/chats/${eventId}/hide`, { method: "POST" }),
   myDashboard: (): Promise<Dashboard> => req(`/my/dashboard?tz_offset=${new Date().getTimezoneOffset()}`),
 

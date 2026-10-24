@@ -83,6 +83,18 @@ export default function Settings() {
           </Pressable>
         </Section>
 
+        {user?.is_admin && (
+          <Section title={t("moderation")} colors={colors}>
+            <Pressable testID="settings-moderation" onPress={() => router.push("/admin")} style={[styles.linkRow, { borderColor: colors.border }]}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                <Ionicons name="shield-half-outline" size={18} color={colors.error} />
+                <Text style={[styles.linkText, { color: colors.onSurface }]}>{t("moderation_queue")}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.onSurfaceTertiary} />
+            </Pressable>
+          </Section>
+        )}
+
         {/* Language */}
         <Section title={t("language")} colors={colors}>
           <View style={styles.langRow}>

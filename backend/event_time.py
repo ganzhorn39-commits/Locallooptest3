@@ -128,7 +128,7 @@ def current_window(doc: dict, now: datetime) -> Tuple[Optional[datetime], Option
 
 def phase(doc: dict, now: datetime) -> str:
     """cancelled | upcoming | live | ended (over, still listed for HIDE_AFTER_END) | past (gone from map and lists)."""
-    if doc.get("status") == "cancelled":
+    if doc.get("status") in ("cancelled", "removed"):  # removed = taken down by moderation
         return "cancelled"
     start, end = current_window(doc, now)
     if not start or now < start:

@@ -113,6 +113,7 @@ function AuthGate() {
         <Stack.Screen name="deals" />
         <Stack.Screen name="legal/[doc]" />
         <Stack.Screen name="notifications" />
+        <Stack.Screen name="admin" />
         <Stack.Screen name="scan-deal" options={{ animation: "slide_from_bottom" }} />
       </Stack>
       {showIntro && <SplashIntro onDone={() => setShowIntro(false)} />}

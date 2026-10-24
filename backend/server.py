@@ -240,7 +240,22 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
     user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    if user.get("banned"):
+        raise HTTPException(status_code=403, detail={"code": "banned", "message": "This account has been blocked"})
     return user
+
+
+def admin_emails() -> set:
+    return {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
+
+
+def is_admin(user: Optional[dict]) -> bool:
+    return bool(user) and (user.get("email") or "").lower() in admin_emails()
+
+
+def reject_banned(user: Optional[dict]):
+    if user and user.get("banned"):
+        raise HTTPException(status_code=403, detail={"code": "banned", "message": "This account has been blocked"})
 
 
 async def get_optional_user(authorization: Optional[str] = Header(None)):
@@ -278,6 +293,7 @@ async def create_session(req: SessionRequest):
     data = resp.json()
     email = data["email"]
     existing = await db.users.find_one({"email": email}, {"_id": 0})
+    reject_banned(existing)
     if existing:
         user_id = existing["user_id"]
         await db.users.update_one({"user_id": user_id}, {"$set": {
@@ -430,6 +446,7 @@ async def email_verify(body: EmailVerify):
         raise HTTPException(status_code=400, detail={"code": "wrong_code", "message": "Wrong code"})
     await db.email_codes.update_many({"email": email}, {"$set": {"used": True}})
     user = await find_or_create_user(email, extra={"email_verified": True})
+    reject_banned(user)
     token = await start_session(user["user_id"])
     return {"user": await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0}), "session_token": token}
 
@@ -465,6 +482,7 @@ async def apple_sign_in(body: AppleSignIn):
     if not user:
         email = (claims.get("email") or "").lower() or f"{sub}@apple.localloop.app"
         user = await find_or_create_user(email, name, extra={"apple_sub": sub})
+    reject_banned(user)
     if name and not user.get("name"):
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"name": name}})
     token = await start_session(user["user_id"])
@@ -504,7 +522,7 @@ async def dev_session(body: Optional[DevSessionBody] = None):
 
 @api_router.get("/auth/me")
 async def auth_me(user=Depends(get_current_user)):
-    return user
+    return {**user, "is_admin": is_admin(user)}
 
 
 @api_router.post("/auth/logout")
@@ -572,7 +590,9 @@ async def attach_hosts(docs: List[dict]) -> List[dict]:
 
 
 DEMO_HOST = "seed_business"  # owner of the seeded Karlsruhe demo venues
-ROLL_DEMO_EVENTS = os.environ.get("ROLL_DEMO_EVENTS", "true").lower() != "false"
+# DEMO_EVENTS=false hides the seeded demo venues everywhere (before launch); while on, they roll forward weekly.
+DEMO_EVENTS = os.environ.get("DEMO_EVENTS", os.environ.get("ROLL_DEMO_EVENTS", "true")).lower() != "false"
+ROLL_DEMO_EVENTS = DEMO_EVENTS
 _demo_checked_at: Optional[datetime] = None
 
 
@@ -606,10 +626,12 @@ async def list_events(category: Optional[str] = None, user=Depends(get_optional_
     await roll_demo_events()
     now = now_utc()
     recent = (now - MAX_DURATION - HIDE_AFTER_END - timedelta(days=1)).isoformat()  # coarse pre-filter, exact check below
-    query: dict = {"status": {"$ne": "cancelled"}, "$or": [{"is_recurring": True}, {"start_time": {"$gte": recent}}]}
+    query: dict = {"status": {"$nin": ["cancelled", "removed"]}, "$or": [{"is_recurring": True}, {"start_time": {"$gte": recent}}]}
     if category and category != "all":
         query["category"] = category
     hidden_hosts = await blocked_ids(user)
+    if not DEMO_EVENTS:
+        hidden_hosts.add(DEMO_HOST)
     if hidden_hosts:
         query["created_by"] = {"$nin": list(hidden_hosts)}
     docs = [d for d in await db.events.find(query, {"_id": 0}).to_list(1000) if lifecycle(d, now) != "past"]
@@ -625,7 +647,7 @@ async def list_events(category: Optional[str] = None, user=Depends(get_optional_
 @api_router.get("/events/{event_id}")
 async def get_event(event_id: str):
     doc = await db.events.find_one({"id": event_id}, {"_id": 0})
-    if not doc:
+    if not doc or doc.get("status") == "removed":
         raise HTTPException(status_code=404, detail="Event not found")
     return with_live_count((await attach_hosts([doc]))[0])
 
@@ -1157,7 +1179,8 @@ async def get_messages(event_id: str, user=Depends(get_current_user)):
                                        {"$set": {"read_at": now_utc().isoformat()}})
     # Messages of blocked people disappear for the blocker; messages hidden after several reports
     # disappear for everyone except their author.
-    return [m for m in docs if m.get("user_id") not in hidden and (not m.get("hidden") or m.get("user_id") == uid)]
+    return [m for m in docs if m.get("user_id") not in hidden and not m.get("removed")
+            and (not m.get("hidden") or m.get("user_id") == uid)]
 
 
 MESSAGE_MAX_LEN = 2000
@@ -1370,13 +1393,72 @@ async def my_blocks(user=Depends(get_current_user)):
     ).to_list(None)
 
 
+def require_admin(user: dict):
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="Admins only")
+
+
 @api_router.get("/admin/reports")
 async def admin_reports(status: str = "open", user=Depends(get_current_user)):
-    """Moderation queue for the addresses listed in ADMIN_EMAILS (comma separated)."""
-    admins = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
-    if (user.get("email") or "").lower() not in admins:
-        raise HTTPException(status_code=403, detail="Admins only")
-    return await db.reports.find({"status": status}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    """Moderation queue for the addresses listed in ADMIN_EMAILS (comma separated): one entry per reported
+    target with all reasons and how many people reported it, most reported first."""
+    require_admin(user)
+    rows = await db.reports.find({"status": status}, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    groups: dict = {}
+    for r in rows:
+        g = groups.setdefault((r["target_type"], r["target_id"]), {**r, "reasons": [], "notes": [], "count": 0})
+        g["count"] += 1
+        if r["reason"] not in g["reasons"]:
+            g["reasons"].append(r["reason"])
+        if r.get("note"):
+            g["notes"].append(r["note"])
+    ids = [g.get("target_owner_id") for g in groups.values() if g.get("target_owner_id")]
+    owners = {o["user_id"]: o for o in await db.users.find(
+        {"user_id": {"$in": ids}}, {"_id": 0, "user_id": 1, "name": 1, "banned": 1}).to_list(None)}
+    out = [{**g, "owner_name": owners.get(g.get("target_owner_id"), {}).get("name", ""),
+            "owner_banned": bool(owners.get(g.get("target_owner_id"), {}).get("banned"))} for g in groups.values()]
+    out.sort(key=lambda g: g["created_at"], reverse=True)
+    out.sort(key=lambda g: g["count"], reverse=True)
+    return out
+
+
+class ModerationAction(BaseModel):
+    action: str  # dismiss | remove | ban
+
+
+async def ban_user(user_id: str, by: str):
+    """Blocked accounts can't sign in any more; their messages and events disappear."""
+    await db.users.update_one({"user_id": user_id}, {"$set": {"banned": True, "banned_at": now_utc().isoformat(), "banned_by": by}})
+    await db.user_sessions.delete_many({"user_id": user_id})
+    await db.messages.update_many({"user_id": user_id}, {"$set": {"hidden": True, "removed": True}})
+    await db.events.update_many({"created_by": user_id, "status": {"$ne": "cancelled"}}, {"$set": {"status": "removed"}})
+
+
+@api_router.post("/admin/reports/{report_id}")
+async def moderate(report_id: str, body: ModerationAction, user=Depends(get_current_user)):
+    """dismiss = nothing wrong; remove = hide the message / take the event down; ban = block the author's account."""
+    require_admin(user)
+    rep_doc = await db.reports.find_one({"id": report_id}, {"_id": 0})
+    if not rep_doc:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if body.action not in ("dismiss", "remove", "ban"):
+        raise HTTPException(status_code=400, detail="Invalid action")
+    ttype, tid, owner = rep_doc["target_type"], rep_doc["target_id"], rep_doc.get("target_owner_id")
+    if body.action == "remove":
+        if ttype == "message":
+            await db.messages.update_one({"id": tid}, {"$set": {"hidden": True, "removed": True}})
+        elif ttype == "event":
+            await db.events.update_one({"id": tid}, {"$set": {"status": "removed"}})
+        else:
+            raise HTTPException(status_code=400, detail="Profiles can't be removed, ban the user instead")
+    if body.action == "ban":
+        if not owner or owner == user["user_id"]:
+            raise HTTPException(status_code=400, detail="Nobody to ban")
+        await ban_user(owner, user["user_id"])
+    await db.reports.update_many({"target_type": ttype, "target_id": tid, "status": "open"}, {"$set": {
+        "status": "dismissed" if body.action == "dismiss" else "resolved", "action": body.action,
+        "resolved_by": user["user_id"], "resolved_at": now_utc().isoformat()}})
+    return {"ok": True}
 
 
 # ----------------------------- Crews -----------------------------
@@ -1683,7 +1765,7 @@ def normalize_deal_code(raw: str) -> str:
 def deal_status(deal: dict, ev: Optional[dict], now: datetime) -> str:
     if deal.get("redeemed_at"):
         return "redeemed"
-    if not ev or ev.get("status") == "cancelled":
+    if not ev or ev.get("status") in ("cancelled", "removed"):
         return "cancelled"
     if lifecycle(ev, now) == "past":
         return "expired"

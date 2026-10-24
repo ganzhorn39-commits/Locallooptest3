@@ -32,6 +32,7 @@ type User = {
   lang?: "de" | "en"; // language of push texts (synced from the app language)
   push_events?: boolean;
   push_messages?: boolean;
+  is_admin?: boolean; // e-mail listed in ADMIN_EMAILS: sees the moderation queue
 };
 type AuthState = { user: User | null; loading: boolean; loggingIn: boolean; guest: boolean };
 
