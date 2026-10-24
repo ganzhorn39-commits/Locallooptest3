@@ -74,11 +74,15 @@ export type Deal = {
   redeemed_at?: string | null;
   status: "active" | "redeemed" | "cancelled" | "expired";
   already?: boolean;
+  offer_id?: string;
 };
 
 export type RedeemResult = Deal & { guest_name: string; guest_picture?: string };
 
 // upcoming → live → ended (still listed for 2 h) → past (gone from map and lists); or cancelled
+// A business offer of an event ("10 % auf Kaffee"); limit 0 = unlimited.
+export type Offer = { id: string; title: string; limit: number; claimed: number };
+
 export type EventPhase = "upcoming" | "live" | "ended" | "past" | "cancelled";
 
 export type EventItem = {
@@ -127,6 +131,7 @@ export type EventItem = {
   offer_title?: string;
   offer_limit?: number;
   offer_claimed?: number;
+  offers?: Offer[]; // all offers (max 3); the offer_* fields mirror the first one
   host_name?: string;
   host_is_business?: boolean;
   trend_score?: number;
@@ -170,6 +175,9 @@ export type DashboardEvent = {
   offer_limit: number;
   deals_claimed: number;
   deals_redeemed: number;
+  offers?: Offer[];
+  views?: number; // different people who opened the event (per day), all time
+  views_period?: number; // ... in the chosen 7 / 30 days
 };
 
 // One row of the Chats tab (GET /my/chats). Archived chats (event over / cancelled) are read-only.
@@ -237,8 +245,13 @@ export type Dashboard = {
     offers: number;
     deals_claimed: number;
     deals_redeemed: number;
+    checkins_period?: number;
+    views?: number;
+    views_period?: number;
+    days?: number;
   };
   checkins_by_day: { date: string; count: number }[];
+  stats_by_day?: { date: string; checkins: number; views: number }[];
   events: DashboardEvent[];
   requests: DashboardRequest[];
   recent_reviews: DashboardReview[];
@@ -275,10 +288,13 @@ export const api = {
   moderate: (reportId: string, action: "dismiss" | "remove" | "ban") =>
     req(`/admin/reports/${reportId}`, { method: "POST", body: JSON.stringify({ action }) }),
   hideChat: (eventId: string) => req(`/chats/${eventId}/hide`, { method: "POST" }),
-  myDashboard: (): Promise<Dashboard> => req(`/my/dashboard?tz_offset=${new Date().getTimezoneOffset()}`),
+  myDashboard: (days = 7): Promise<Dashboard> => req(`/my/dashboard?tz_offset=${new Date().getTimezoneOffset()}&days=${days}`),
+  recordView: (eventId: string, deviceId: string) =>
+    req(`/events/${eventId}/view`, { method: "POST", body: JSON.stringify({ device_id: deviceId }) }),
 
   // Deals (business offers)
-  claimDeal: (eventId: string): Promise<Deal> => req(`/events/${eventId}/deal`, { method: "POST" }),
+  claimDeal: (eventId: string, offerId?: string): Promise<Deal> =>
+    req(`/events/${eventId}/deal`, { method: "POST", body: JSON.stringify({ offer_id: offerId || "" }) }),
   myEventDeal: (eventId: string): Promise<{ deal: Deal | null }> => req(`/events/${eventId}/deal`),
   myDeals: (): Promise<Deal[]> => req(`/my/deals`),
   redeemDeal: (code: string): Promise<RedeemResult> =>

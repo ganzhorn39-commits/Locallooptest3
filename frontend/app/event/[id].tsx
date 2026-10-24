@@ -10,8 +10,9 @@ import { useI18n } from "@/src/i18n";
 import { useAuth } from "@/src/auth/AuthContext";
 import { api, EventItem } from "@/src/api/client";
 import { categoryLabel, categoryMeta } from "@/src/constants/categories";
-import { formatWhen, hasEnded, isLiveNow, whenLabel } from "@/src/utils/eventTime";
+import { eventWindow, formatDay, formatWhen, hasEnded, isLiveNow, whenLabel } from "@/src/utils/eventTime";
 import { friendsGoingText } from "@/src/utils/social";
+import { addToCalendar, recordView } from "@/src/utils/eventExtras";
 import DealCard from "@/src/components/DealCard";
 import ActionSheet from "@/src/components/ActionSheet";
 import ReportSheet from "@/src/components/ReportSheet";
@@ -33,7 +34,9 @@ export default function EventDetail() {
   const [confirmBlock, setConfirmBlock] = useState(false);
 
   // Reload on focus so edits made by the host show up when coming back from the edit form.
+  const [calNote, setCalNote] = useState("");
   const load = useCallback(async () => {
+    recordView(id);
     try { setE(await api.getEvent(id)); } catch {} finally { setLoading(false); }
     if (user) { try { setPeople(await api.participants(id)); } catch {} }
   }, [id, user]);
@@ -83,6 +86,15 @@ export default function EventDetail() {
             <Ionicons name="chevron-back" size={24} color="#FFFFFF" />
           </Pressable>
           <View style={[styles.heroActions, { top: insets.top + 8 }]}>
+            {!cancelled && !over && (
+              <Pressable testID="event-detail-calendar" accessibilityLabel={t("calendar_add")} style={styles.roundBtnStatic}
+                onPress={async () => {
+                  const r = await addToCalendar(e);
+                  if (r !== "canceled") setCalNote(t(r === "added" ? "calendar_added" : r === "downloaded" ? "calendar_downloaded" : "calendar_failed"));
+                }}>
+                <Ionicons name="calendar-outline" size={21} color="#FFFFFF" />
+              </Pressable>
+            )}
             <Pressable testID="event-detail-share" accessibilityLabel={t("share")} onPress={share} style={styles.roundBtnStatic}>
               <Ionicons name="share-social-outline" size={21} color="#FFFFFF" />
             </Pressable>
@@ -115,6 +127,7 @@ export default function EventDetail() {
               <Text style={[styles.bannerText, { color: colors.error }]}>{t("event_cancelled_banner")}</Text>
             </View>
           )}
+          {!!calNote && <Text testID="calendar-note" style={{ color: colors.success, fontSize: 14, fontWeight: "700" }}>{calNote}</Text>}
           {over && (
             <View testID="event-over-banner" style={[styles.banner, { borderColor: colors.borderStrong }]}>
               <Ionicons name="time-outline" size={18} color={colors.onSurfaceTertiary} />
@@ -129,7 +142,7 @@ export default function EventDetail() {
             </Pressable>
           )}
           <Row icon={e.is_recurring ? "repeat" : "calendar-outline"} color={colors.brand} text={formatWhen(e, t, lang)} colors={colors} testID="event-detail-when" />
-          {!cancelled && <Row icon={live ? "radio-outline" : "time-outline"} color={live ? colors.error : colors.brand} text={whenLabel(e, t, lang)} colors={colors} />}
+          {!cancelled && !whenLabel(e, t, lang).startsWith(formatDay(eventWindow(e).start, lang)) && <Row icon={live ? "radio-outline" : "time-outline"} color={live ? colors.error : colors.brand} text={whenLabel(e, t, lang)} colors={colors} />}
           {!!e.address && <Row icon="location-outline" color={colors.brand} text={e.address} colors={colors} />}
           {!!e.capacity && e.capacity > 0 && <Row icon="people-outline" color={colors.brand} text={`${e.spots_taken || 0}/${e.capacity}`} colors={colors} />}
           {!!e.rating && e.rating > 0 && <Row icon="star" color="#FFD60A" text={`${e.rating.toFixed(1)} (${e.rating_count})`} colors={colors} />}

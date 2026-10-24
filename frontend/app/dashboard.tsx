@@ -32,10 +32,12 @@ export default function DashboardScreen() {
   const [actionError, setActionError] = useState("");
   const [manage, setManage] = useState<DashboardEvent | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [range, setRange] = useState<7 | 30>(7);
+  const [metric, setMetric] = useState<"views" | "checkins">("views");
 
   const load = useCallback(async () => {
     try {
-      setData(await api.myDashboard());
+      setData(await api.myDashboard(range));
       setLoadFailed(false);
     } catch {
       setLoadFailed(true);
@@ -43,7 +45,7 @@ export default function DashboardScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [range]);
 
   useFocusEffect(useCallback(() => { if (user) load(); }, [load, user]));
 
@@ -185,6 +187,9 @@ export default function DashboardScreen() {
               <Stat testID="stat-checkins" colors={colors} icon="people" iconColor={colors.accent}
                 label={t("dash_checkins")} value={totals.checkins.toLocaleString(locale)}
                 sub={t("dash_last_7_days").replace("{n}", String(totals.checkins_7d))} />
+              <Stat testID="stat-views" colors={colors} icon="eye" iconColor={colors.brand}
+                label={t("dash_views")} value={(totals.views || 0).toLocaleString(locale)}
+                sub={t("dash_in_days").replace("{n}", String(totals.views_period || 0)).replace("{d}", String(totals.days || range))} />
               <Stat testID="stat-saves" colors={colors} icon="bookmark" iconColor={colors.brand}
                 label={t("dash_saves")} value={totals.saves.toLocaleString(locale)} sub={t("dash_saves_sub")} />
               <Stat testID="stat-rating" colors={colors} icon="star" iconColor="#FFD60A"
@@ -264,8 +269,38 @@ export default function DashboardScreen() {
             )}
 
             <View style={styles.section}>
-              <Text style={[styles.sectionTitle, { color: colors.onSurfaceTertiary }]}>{t("dash_chart_title")}</Text>
-              <WeekChart days={data.checkins_by_day} colors={colors} locale={locale} emptyText={t("dash_chart_empty")} />
+              <View style={styles.chartHead}>
+                <Text style={[styles.sectionTitle, { color: colors.onSurfaceTertiary }]}>{t("dash_stats_title")}</Text>
+                <View style={[styles.seg, { backgroundColor: colors.surfaceTertiary }]}>
+                  {([7, 30] as const).map((d) => (
+                    <Pressable key={d} testID={`dash-range-${d}`} onPress={() => { setRange(d); setLoading(true); }}
+                      style={[styles.segBtn, range === d && { backgroundColor: colors.brand }]}>
+                      <Text style={[styles.segText, { color: range === d ? colors.onBrand : colors.onSurface }]}>{t("dash_days").replace("{n}", String(d))}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+              <View style={[styles.seg, { backgroundColor: colors.surfaceTertiary, alignSelf: "flex-start" }]}>
+                {(["views", "checkins"] as const).map((m) => (
+                  <Pressable key={m} testID={`dash-metric-${m}`} onPress={() => setMetric(m)} style={[styles.segBtn, metric === m && { backgroundColor: colors.surfaceInverse }]}>
+                    <Text style={[styles.segText, { color: metric === m ? colors.onSurfaceInverse : colors.onSurface }]}>{m === "views" ? t("dash_views") : t("dash_checkins")}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <WeekChart
+                days={(data.stats_by_day || data.checkins_by_day.map((d) => ({ date: d.date, checkins: d.count, views: 0 })))
+                  .map((d) => ({ date: d.date, count: metric === "views" ? d.views : d.checkins }))}
+                colors={colors} locale={locale} emptyText={metric === "views" ? t("dash_views_empty") : t("dash_chart_empty")}
+              />
+              {(totals.views_period || 0) > 0 && (
+                <Text testID="dash-conversion" style={[styles.convText, { color: colors.onSurfaceSecondary }]}>
+                  {/* the share only means something once views are counted longer than the check-ins (new feature) */}
+                  {t((totals.checkins_period ?? 0) <= (totals.views_period || 0) ? "dash_conversion" : "dash_conversion_plain")
+                    .replace("{v}", String(totals.views_period || 0))
+                    .replace("{c}", String(totals.checkins_period ?? 0))
+                    .replace("{p}", String(Math.round(((totals.checkins_period ?? 0) / Math.max(1, totals.views_period || 0)) * 100)))}
+                </Text>
+              )}
             </View>
 
             <View style={styles.section}>
@@ -289,6 +324,7 @@ export default function DashboardScreen() {
                       <Text style={[styles.rowSub, { color: colors.onSurfaceTertiary }]} numberOfLines={1}>{when(e)}</Text>
                       <View style={styles.metricRow}>
                         <Metric icon="people" colors={colors} text={e.capacity > 0 ? `${e.checkins}/${e.capacity}` : String(e.checkins)} />
+                        <Metric icon="eye" colors={colors} text={String(e.views ?? 0)} />
                         <Metric icon="bookmark" colors={colors} text={String(e.saves)} />
                         {e.rating_count > 0 && <Metric icon="star" iconColor="#FFD60A" colors={colors} text={`${e.rating.toFixed(1)} (${e.rating_count})`} />}
                         {!!e.offer_title && (
@@ -390,20 +426,24 @@ function WeekChart({ days, colors, locale, emptyText }: {
 }) {
   const max = Math.max(1, ...days.map((d) => d.count));
   const total = days.reduce((sum, d) => sum + d.count, 0);
+  const dense = days.length > 10; // 30 days: thin bars, a date every 5 days
   return (
     <View testID="dashboard-chart" style={[styles.chartCard, { backgroundColor: colors.surfaceSecondary, borderColor: colors.border }]}>
       <View style={styles.bars}>
         {days.map((d, i) => {
           const today = i === days.length - 1;
           const [y, m, dd] = d.date.split("-").map(Number);
-          const label = new Date(y, m - 1, dd).toLocaleDateString(locale, { weekday: "short" }).replace(".", "");
+          const date = new Date(y, m - 1, dd);
+          const label = dense
+            ? ((days.length - 1 - i) % 5 === 0 ? `${dd}.` : "")
+            : date.toLocaleDateString(locale, { weekday: "short" }).replace(".", "");
           return (
             <View key={d.date} style={styles.barCol} testID={`chart-day-${d.date}`}>
-              <Text style={[styles.barValue, { color: d.count ? colors.onSurface : "transparent" }]}>{d.count}</Text>
-              <View style={[styles.bar, d.count
+              <Text style={[styles.barValue, { color: d.count && !dense ? colors.onSurface : "transparent" }]}>{d.count}</Text>
+              <View style={[styles.bar, dense && { width: 6, borderRadius: 3 }, d.count
                 ? { height: Math.max(8, Math.round((d.count / max) * 72)), backgroundColor: colors.brand, opacity: today ? 1 : 0.5 }
                 : { height: 3, backgroundColor: colors.borderStrong }]} />
-              <Text style={[styles.barLabel, { color: today ? colors.onSurface : colors.onSurfaceTertiary, fontWeight: today ? "800" : "600" }]}>{label}</Text>
+              <Text numberOfLines={1} style={[styles.barLabel, dense && { fontSize: 10, width: 24, textAlign: "center" }, { color: today ? colors.onSurface : colors.onSurfaceTertiary, fontWeight: today ? "800" : "600" }]}>{label}</Text>
             </View>
           );
         })}
@@ -489,6 +529,11 @@ const styles = StyleSheet.create({
   barValue: { fontSize: 12, fontWeight: "800" },
   barLabel: { fontSize: 11, textTransform: "capitalize" },
   chartEmpty: { fontSize: 13, textAlign: "center" },
+  chartHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  seg: { flexDirection: "row", borderRadius: 10, padding: 3, gap: 3 },
+  segBtn: { paddingHorizontal: 12, height: 30, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  segText: { fontSize: 13, fontWeight: "800" },
+  convText: { fontSize: 13, fontWeight: "600" },
   eventRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderRadius: 16, borderWidth: 1 },
   eventAvatar: { width: 46, height: 46, borderRadius: 23, alignItems: "center", justifyContent: "center" },
   metricRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 12, marginTop: 2 },

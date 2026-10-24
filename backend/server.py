@@ -12,7 +12,7 @@ import httpx
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 
 from moderation import censor_text, find_bad_words
 import event_time
@@ -154,6 +154,12 @@ def now_utc():
     return datetime.now(timezone.utc)
 
 
+class OfferIn(BaseModel):
+    id: str = ""  # existing offer to keep (its claimed deals stay); empty = new offer
+    title: str = ""
+    limit: int = 0  # 0 = unlimited
+
+
 class EventCreate(BaseModel):
     title: str
     category: str  # nightlife | food | sports | ... | other
@@ -181,6 +187,7 @@ class EventCreate(BaseModel):
     age_restricted: bool = False
     offer_title: str = ""  # business accounts only, e.g. "10% auf Kaffee"
     offer_limit: int = 0  # how many deals can be claimed in total; 0 = unlimited
+    offers: Optional[List["OfferIn"]] = None  # up to 3 offers; replaces offer_title/offer_limit when sent
 
 
 class Event(BaseModel):
@@ -217,6 +224,8 @@ class Event(BaseModel):
     offer_title: str = ""
     offer_limit: int = 0
     offer_claimed: int = 0  # deals handed out (kept in sync with db.deals, used to enforce the limit atomically)
+    offer_id: str = "main"  # id of the first offer (the offer_* fields); more offers live in extra_offers
+    extra_offers: List[dict] = []  # [{id, title, limit, claimed}]
     checkins: int = 0
     created_by: str = "demo"
     created_at: str = Field(default_factory=lambda: now_utc().isoformat())
@@ -567,6 +576,8 @@ def with_live_count(doc: dict) -> dict:
     if is_recurring(doc):
         doc["occurrences"] = upcoming_starts(doc, now)  # coming dates for the app's date filter
     doc.setdefault("end_time", "")
+    doc["offers"] = event_offers(doc)
+    doc.pop("extra_offers", None)
     return doc
 
 
@@ -661,6 +672,29 @@ async def list_events(category: Optional[str] = None, user=Depends(get_optional_
     return [with_live_count(d) for d in await attach_hosts(docs)]
 
 
+class ViewBody(BaseModel):
+    device_id: str = ""  # guests: random id kept on the device, so a guest counts once per day
+
+
+@api_router.post("/events/{event_id}/view")
+async def record_view(event_id: str, body: ViewBody = ViewBody(), user=Depends(get_optional_user)):
+    """Counts how many different people opened an event per day (host statistics). The host's own views don't count."""
+    ev = await db.events.find_one({"id": event_id}, {"_id": 0, "id": 1, "created_by": 1})
+    if not ev:
+        raise HTTPException(status_code=404, detail="Event not found")
+    key = f"u:{user['user_id']}" if user else (f"d:{body.device_id[:64]}" if body.device_id.strip() else "")
+    if not key or (user and user["user_id"] == ev.get("created_by")):
+        return {"counted": False}
+    day = event_time.to_local(now_utc()).date().isoformat()
+    try:
+        await db.event_views.update_one({"event_id": event_id, "viewer": key, "day": day},
+                                        {"$setOnInsert": {"event_id": event_id, "viewer": key, "day": day, "at": now_utc().isoformat()}},
+                                        upsert=True)
+    except DuplicateKeyError:
+        pass
+    return {"counted": True}
+
+
 @api_router.get("/events/{event_id}")
 async def get_event(event_id: str):
     doc = await db.events.find_one({"id": event_id}, {"_id": 0})
@@ -672,6 +706,65 @@ async def get_event(event_id: str):
 OFFER_MAX_LEN = 80
 
 
+MAX_OFFERS = 3
+
+
+def event_offers(ev: Optional[dict]) -> List[dict]:
+    """All offers of an event: the first one is stored in the offer_* fields, more in extra_offers."""
+    if not ev:
+        return []
+    out = []
+    if ev.get("offer_title"):
+        out.append({"id": ev.get("offer_id") or "main", "title": ev["offer_title"],
+                    "limit": int(ev.get("offer_limit", 0) or 0), "claimed": int(ev.get("offer_claimed", 0) or 0)})
+    for o in ev.get("extra_offers") or []:
+        out.append({"id": o["id"], "title": o.get("title", ""), "limit": int(o.get("limit", 0) or 0), "claimed": int(o.get("claimed", 0) or 0)})
+    return out
+
+
+def is_main_offer(ev: dict, offer_id: Optional[str]) -> bool:
+    return not offer_id or offer_id == (ev.get("offer_id") or "main")
+
+
+async def build_offers(user: dict, offers_in: List["OfferIn"], ev: Optional[dict] = None) -> dict:
+    """Validate a full offer list and turn it into the stored fields (claimed counts come from the deals)."""
+    offers_in = [o for o in offers_in if (o.title or "").strip()]
+    if len(offers_in) > MAX_OFFERS:
+        raise HTTPException(status_code=400, detail={"code": "too_many_offers", "message": f"At most {MAX_OFFERS} offers"})
+    if offers_in and user.get("account_type") != "business":
+        raise HTTPException(status_code=403, detail="Only business accounts can add offers")
+    known = {o["id"] for o in event_offers(ev)}
+    final = []
+    for o in offers_in:
+        title, limit = o.title.strip(), max(0, int(o.limit or 0))
+        if len(title) > OFFER_MAX_LEN:
+            raise HTTPException(status_code=400, detail=f"Offer text is too long (max {OFFER_MAX_LEN})")
+        oid = o.id if o.id and o.id in known else uuid.uuid4().hex[:10]
+        claimed = 0
+        if ev and o.id in known:
+            q = {"event_id": ev["id"], "offer_id": oid}
+            if is_main_offer(ev, oid):  # deals from before multi-offers carry no offer_id
+                q = {"event_id": ev["id"], "$or": [{"offer_id": oid}, {"offer_id": {"$exists": False}}, {"offer_id": None}]}
+            claimed = await db.deals.count_documents(q)
+            if limit and limit < claimed:
+                raise HTTPException(status_code=409, detail=f"Offer limit below claimed deals ({claimed})")
+        final.append({"id": oid, "title": title, "limit": limit, "claimed": claimed})
+    first = final[0] if final else {"id": "main", "title": "", "limit": 0, "claimed": 0}
+    return {"offer_title": first["title"], "offer_limit": first["limit"], "offer_claimed": first["claimed"],
+            "offer_id": first["id"], "extra_offers": final[1:]}
+
+
+async def release_offer(event_id: str, offer_id: Optional[str]):
+    """A claimed but unused deal goes back to its offer's pool."""
+    ev = await db.events.find_one({"id": event_id}, {"_id": 0, "offer_id": 1, "extra_offers": 1})
+    if not ev:
+        return
+    if is_main_offer(ev, offer_id) or not any(o["id"] == offer_id for o in ev.get("extra_offers") or []):
+        await db.events.update_one({"id": event_id}, {"$inc": {"offer_claimed": -1}})
+    else:
+        await db.events.update_one({"id": event_id, "extra_offers.id": offer_id}, {"$inc": {"extra_offers.$.claimed": -1}})
+
+
 async def check_offer(user: dict, title: str, limit: int, event_id: Optional[str] = None):
     """Validate an event offer. Only business accounts may attach one; returns (title, limit)."""
     title = (title or "").strip()
@@ -681,7 +774,9 @@ async def check_offer(user: dict, title: str, limit: int, event_id: Optional[str
     if title and user.get("account_type") != "business":
         raise HTTPException(status_code=403, detail="Only business accounts can add offers")
     if event_id and limit:
-        claimed = await db.deals.count_documents({"event_id": event_id})
+        ev = await db.events.find_one({"id": event_id}, {"_id": 0, "offer_id": 1}) or {}
+        claimed = await db.deals.count_documents({"event_id": event_id, "$or": [
+            {"offer_id": ev.get("offer_id") or "main"}, {"offer_id": {"$exists": False}}, {"offer_id": None}]})
         if limit < claimed:
             raise HTTPException(status_code=409, detail=f"Offer limit below claimed deals ({claimed})")
     return title, limit
@@ -725,7 +820,14 @@ async def create_event(payload: EventCreate, user=Depends(get_current_user)):
     check_times(data["start_time"], data["end_time"])
     if lifecycle(data) in ("ended", "past"):  # a running event is fine ("we're here, come by")
         raise HTTPException(status_code=400, detail={"code": "event_over", "message": "This time is already over"})
-    data["offer_title"], data["offer_limit"] = await check_offer(user, data["offer_title"], data["offer_limit"])
+    offers_in = payload.offers
+    data.pop("offers", None)
+    if offers_in is not None:
+        for o in offers_in:
+            reject_bad_words({"offer_title": o.title})
+        data.update(await build_offers(user, offers_in))
+    else:
+        data["offer_title"], data["offer_limit"] = await check_offer(user, data["offer_title"], data["offer_limit"])
     event = Event(**data, created_by=user["user_id"])
     await db.events.insert_one(event.dict())
     try:
@@ -770,6 +872,7 @@ class EventUpdate(BaseModel):
     age_restricted: Optional[bool] = None
     offer_title: Optional[str] = None  # "" removes the offer (already claimed deals stay valid)
     offer_limit: Optional[int] = None
+    offers: Optional[List["OfferIn"]] = None  # full list of offers (max 3); [] removes all
 
 
 @api_router.patch("/events/{event_id}")
@@ -777,7 +880,7 @@ async def update_event(event_id: str, payload: EventUpdate, user=Depends(get_cur
     ev = await require_host(event_id, user)
     if ev.get("status") == "cancelled":
         raise HTTPException(status_code=409, detail="Event cancelled")
-    updates = {k: v for k, v in payload.dict().items() if v is not None}
+    updates = {k: v for k, v in payload.dict().items() if v is not None and k != "offers"}
     reject_bad_words({k: updates.get(k) for k in ("title", "description", "offer_title", "venue_name", "category_label")})
     if "category" in updates or "category_label" in updates:
         updates["category_label"] = clean_category_label(
@@ -797,7 +900,13 @@ async def update_event(event_id: str, payload: EventUpdate, user=Depends(get_cur
         going = await db.checkins.count_documents({"event_id": event_id})
         if 0 < updates["capacity"] < going:
             raise HTTPException(status_code=409, detail=f"Capacity below current check-ins ({going})")
-    if "offer_title" in updates or "offer_limit" in updates:
+    if payload.offers is not None:
+        for o in payload.offers:
+            reject_bad_words({"offer_title": o.title})
+        updates.pop("offer_title", None)
+        updates.pop("offer_limit", None)
+        updates.update(await build_offers(user, payload.offers, ev))
+    elif "offer_title" in updates or "offer_limit" in updates:
         updates["offer_title"], updates["offer_limit"] = await check_offer(
             user, updates.get("offer_title", ev.get("offer_title", "")),
             updates.get("offer_limit", ev.get("offer_limit", 0)), event_id,
@@ -861,9 +970,10 @@ async def checkin(event_id: str, body: CheckinBody = CheckinBody(), user=Depends
         await db.checkins.delete_one({"event_id": event_id, "user_id": uid})
         await db.events.update_one({"id": event_id}, {"$inc": {"checkins": -1}})
         # Leaving the event hands an unused deal back to the pool (redeemed deals stay as history).
-        released = await db.deals.delete_one({"event_id": event_id, "user_id": uid, "redeemed_at": None})
-        if released.deleted_count:
-            await db.events.update_one({"id": event_id}, {"$inc": {"offer_claimed": -1}})
+        unused = await db.deals.find_one({"event_id": event_id, "user_id": uid, "redeemed_at": None}, {"_id": 0, "id": 1, "offer_id": 1})
+        if unused:
+            await db.deals.delete_one({"id": unused["id"]})
+            await release_offer(event_id, unused.get("offer_id"))
     elif pending_req:
         # toggle off a pending request
         await db.join_requests.delete_one({"event_id": event_id, "user_id": uid})
@@ -1142,12 +1252,12 @@ async def delete_profile(user=Depends(get_current_user)):
     await db.crews.update_many({}, {"$pull": {"member_ids": uid}})
     await db.crew_suggestions.update_many({}, {"$pull": {"votes": uid}})
     # Unused deals go back to the pool; redeemed ones stay for the host's numbers but lose the link to the person.
-    for d in await db.deals.find({"user_id": uid}, {"_id": 0, "id": 1, "event_id": 1, "redeemed_at": 1}).to_list(None):
+    for d in await db.deals.find({"user_id": uid}, {"_id": 0, "id": 1, "event_id": 1, "redeemed_at": 1, "offer_id": 1}).to_list(None):
         if d.get("redeemed_at"):
             await db.deals.update_one({"id": d["id"]}, {"$set": {"user_id": f"deleted_{d['id']}"}})
         else:
             await db.deals.delete_one({"id": d["id"]})
-            await db.events.update_one({"id": d["event_id"]}, {"$inc": {"offer_claimed": -1}})
+            await release_offer(d["event_id"], d.get("offer_id"))
     await db.blocks.delete_many({"$or": [{"user_id": uid}, {"blocked_id": uid}]})
     await db.reports.delete_many({"reporter_id": uid})  # reports *about* this user stay for moderation
     await db.notifications.delete_many({"user_id": uid})
@@ -1757,7 +1867,7 @@ async def counts_by_event(collection, match: dict) -> dict:
 
 
 @api_router.get("/my/dashboard")
-async def my_dashboard(tz_offset: int = 0, user=Depends(get_current_user)):
+async def my_dashboard(tz_offset: int = 0, days: int = 7, user=Depends(get_current_user)):
     """Host overview for the events this user created.
     tz_offset = JS Date.getTimezoneOffset() of the viewer (Berlin summer: -120), used for the per-day chart."""
     uid = user["user_id"]
@@ -1788,9 +1898,10 @@ async def my_dashboard(tz_offset: int = 0, user=Depends(get_current_user)):
     for r in open_requests:
         pending[r["event_id"]] = pending.get(r["event_id"], 0) + 1
 
-    # Check-ins per local day, last 7 days (oldest first, today last).
+    # Check-ins (and event views) per local day for the chosen period (7 or 30 days; oldest first, today last).
+    span = 30 if days >= 30 else 7
     today = (now + local).date()
-    days = [today - timedelta(days=i) for i in range(6, -1, -1)]
+    days = [today - timedelta(days=i) for i in range(span - 1, -1, -1)]
     window_start = datetime.combine(days[0], datetime.min.time(), tzinfo=timezone.utc) - local
     recent = await db.checkins.find(
         {"event_id": {"$in": ids}, "at": {"$gte": window_start.isoformat()}}, {"_id": 0, "at": 1}
@@ -1800,6 +1911,22 @@ async def my_dashboard(tz_offset: int = 0, user=Depends(get_current_user)):
         at = parse_iso(c.get("at"))
         if at and (at + local).date() in per_day:
             per_day[(at + local).date()] += 1
+    week_start = today - timedelta(days=6)
+    checkins_7d = sum(n for d, n in per_day.items() if d >= week_start)
+    # views are stored per Karlsruhe day
+    views_rows = await db.event_views.find({"event_id": {"$in": ids}, "day": {"$gte": days[0].isoformat()}},
+                                           {"_id": 0, "event_id": 1, "day": 1}).to_list(200000)
+    views_day = {d: 0 for d in days}
+    views_period: dict = {}
+    for v in views_rows:
+        try:
+            d = date.fromisoformat(v["day"])
+        except ValueError:
+            continue
+        if d in views_day:
+            views_day[d] += 1
+            views_period[v["event_id"]] = views_period.get(v["event_id"], 0) + 1
+    views_total = await counts_by_event(db.event_views, {"event_id": {"$in": ids}})
 
     rows = []
     for e in events:
@@ -1817,7 +1944,8 @@ async def my_dashboard(tz_offset: int = 0, user=Depends(get_current_user)):
             "checkins": checkins.get(eid, 0), "saves": saves.get(eid, 0),
             "reviews": reviews.get(eid, 0), "pending_requests": pending.get(eid, 0),
             "offer_title": e.get("offer_title", ""), "offer_limit": int(e.get("offer_limit", 0) or 0),
-            "deals_claimed": deals.get(eid, 0), "deals_redeemed": redeemed.get(eid, 0),
+            "deals_claimed": deals.get(eid, 0), "deals_redeemed": redeemed.get(eid, 0), "offers": event_offers(e),
+            "views": views_total.get(eid, 0), "views_period": views_period.get(eid, 0),
         })
     far = datetime.max.replace(tzinfo=timezone.utc)
     upcoming = sorted((r for r in rows if r["phase"] == "upcoming"), key=lambda r: parse_iso(r["next_occurrence"]) or far)
@@ -1840,17 +1968,22 @@ async def my_dashboard(tz_offset: int = 0, user=Depends(get_current_user)):
             "events": len(rows),
             "active_events": len(upcoming),
             "checkins": sum(checkins.values()),
-            "checkins_7d": sum(per_day.values()),
+            "checkins_7d": checkins_7d,
+            "checkins_period": sum(per_day.values()),
+            "views": sum(views_total.values()),
+            "views_period": sum(views_day.values()),
+            "days": span,
             "saves": sum(saves.values()),
             "reviews": sum(reviews.values()),
             "pending_requests": len(open_requests),
             "rating": rating,
             "rating_count": rating_count,
-            "offers": sum(1 for r in rows if r["offer_title"]),
+            "offers": sum(len(r["offers"]) for r in rows),
             "deals_claimed": sum(deals.values()),
             "deals_redeemed": sum(redeemed.values()),
         },
         "checkins_by_day": [{"date": d.isoformat(), "count": per_day[d]} for d in days],
+        "stats_by_day": [{"date": d.isoformat(), "checkins": per_day[d], "views": views_day[d]} for d in days],
         "events": upcoming + past + cancelled,
         "requests": requests_out,
         "recent_reviews": recent_reviews,
@@ -1906,13 +2039,21 @@ async def deal_host(deal_or_event_host_id: str) -> Optional[dict]:
         {"user_id": deal_or_event_host_id}, {"_id": 0, "user_id": 1, "name": 1, "business_name": 1})
 
 
+class ClaimBody(BaseModel):
+    offer_id: str = ""  # which offer (several per event possible); empty = the first one
+
+
 @api_router.post("/events/{event_id}/deal")
-async def claim_deal(event_id: str, user=Depends(get_current_user)):
+async def claim_deal(event_id: str, body: ClaimBody = ClaimBody(), user=Depends(get_current_user)):
     ev = await db.events.find_one({"id": event_id}, {"_id": 0})
     if not ev:
         raise HTTPException(status_code=404, detail="Event not found")
-    if not ev.get("offer_title"):
+    offers = event_offers(ev)
+    if not offers:
         raise HTTPException(status_code=404, detail="This event has no offer")
+    offer = next((o for o in offers if o["id"] == body.offer_id), None) if body.offer_id else offers[0]
+    if not offer:
+        raise HTTPException(status_code=404, detail="Offer not found")
     uid = user["user_id"]
     host = await deal_host(ev.get("created_by", ""))
     existing = await db.deals.find_one({"event_id": event_id, "user_id": uid}, {"_id": 0})
@@ -1928,21 +2069,27 @@ async def claim_deal(event_id: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Check in to claim this offer")
 
     # Reserve one deal atomically, so the limit also holds when people claim at the same moment.
-    limit = int(ev.get("offer_limit", 0) or 0)
-    if limit:
-        res = await db.events.update_one(
-            {"id": event_id, "$or": [{"offer_claimed": {"$lt": limit}}, {"offer_claimed": {"$exists": False}}]},
-            {"$inc": {"offer_claimed": 1}},
-        )
+    limit = offer["limit"]
+    if is_main_offer(ev, offer["id"]):
+        if limit:
+            res = await db.events.update_one(
+                {"id": event_id, "$or": [{"offer_claimed": {"$lt": limit}}, {"offer_claimed": {"$exists": False}}]},
+                {"$inc": {"offer_claimed": 1}},
+            )
+            if res.modified_count == 0:
+                raise HTTPException(status_code=409, detail="Offer sold out")
+        else:
+            await db.events.update_one({"id": event_id}, {"$inc": {"offer_claimed": 1}})
+    else:
+        match = {"id": offer["id"], "claimed": {"$lt": limit}} if limit else {"id": offer["id"]}
+        res = await db.events.update_one({"id": event_id, "extra_offers": {"$elemMatch": match}}, {"$inc": {"extra_offers.$.claimed": 1}})
         if res.modified_count == 0:
             raise HTTPException(status_code=409, detail="Offer sold out")
-    else:
-        await db.events.update_one({"id": event_id}, {"$inc": {"offer_claimed": 1}})
 
     for _ in range(3):
         deal = {
             "id": str(uuid.uuid4()), "code": new_deal_code(), "event_id": event_id, "user_id": uid,
-            "host_id": ev.get("created_by"), "offer_title": ev["offer_title"],
+            "host_id": ev.get("created_by"), "offer_title": offer["title"], "offer_id": offer["id"],
             "claimed_at": now_utc().isoformat(), "redeemed_at": None,
         }
         try:
@@ -1951,10 +2098,10 @@ async def claim_deal(event_id: str, user=Depends(get_current_user)):
         except DuplicateKeyError:
             existing = await db.deals.find_one({"event_id": event_id, "user_id": uid}, {"_id": 0})
             if existing:  # a parallel request by the same person won
-                await db.events.update_one({"id": event_id}, {"$inc": {"offer_claimed": -1}})
+                await release_offer(event_id, offer["id"])
                 return {**deal_view(existing, ev, now_utc(), host), "already": True}
             # otherwise the random code collided: try a new one
-    await db.events.update_one({"id": event_id}, {"$inc": {"offer_claimed": -1}})
+    await release_offer(event_id, offer["id"])
     raise HTTPException(status_code=503, detail="Could not create a deal, please try again")
 
 
@@ -2176,6 +2323,7 @@ async def seed_and_index():
     await db.email_codes.create_index([("email", 1), ("created_at", -1)])
     await db.follows.create_index([("follower_id", 1), ("followee_id", 1)], unique=True)
     await db.follows.create_index("followee_id")
+    await db.event_views.create_index([("event_id", 1), ("viewer", 1), ("day", 1)], unique=True)
     await db.users.create_index("apple_sub", sparse=True)
     SEED_VERSION = 2
     meta = await db.meta.find_one({"key": "seed_version"})

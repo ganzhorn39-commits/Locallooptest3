@@ -94,9 +94,14 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
   const [days, setDays] = useState<number[]>(initial?.recurrence_days || []);
   const [joinApproval, setJoinApproval] = useState<"auto" | "manual">(initial?.join_approval || "auto");
   const [ageRestricted, setAgeRestricted] = useState(!!initial?.age_restricted);
-  const [hasOffer, setHasOffer] = useState(!!initial?.offer_title);
-  const [offerTitle, setOfferTitle] = useState(initial?.offer_title || "");
-  const [offerLimit, setOfferLimit] = useState(initial?.offer_limit ? String(initial.offer_limit) : "");
+  // Business offers (max 3); each person can claim one of them per event.
+  type OfferDraft = { id: string; title: string; limit: string; claimed: number };
+  const initialOffers: OfferDraft[] = (initial?.offers?.length ? initial.offers
+    : initial?.offer_title ? [{ id: "main", title: initial.offer_title, limit: initial.offer_limit || 0, claimed: initial.offer_claimed || 0 }] : [])
+    .map((o) => ({ id: o.id, title: o.title, limit: o.limit ? String(o.limit) : "", claimed: o.claimed }));
+  const [hasOffer, setHasOffer] = useState(initialOffers.length > 0);
+  const [offers, setOffers] = useState<OfferDraft[]>(initialOffers.length ? initialOffers : [{ id: "", title: "", limit: "", claimed: 0 }]);
+  const setOffer = (i: number, patch: Partial<OfferDraft>) => setOffers((list) => list.map((o, j) => (j === i ? { ...o, ...patch } : o)));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -113,10 +118,10 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
     const cap = parseInt(capacity, 10) || 0;
     const going = initial?.spots_taken ?? initial?.checkins ?? 0;
     if (editing && cap > 0 && cap < going) { setError(t("edit_capacity_error").replace("{n}", String(going))); return; }
-    const dealLimit = hasOffer ? parseInt(offerLimit, 10) || 0 : 0;
-    const dealsGone = initial?.offer_claimed ?? 0;
-    if (isBiz && hasOffer && !offerTitle.trim()) { setError(t("offer_required")); return; }
-    if (isBiz && dealLimit > 0 && dealLimit < dealsGone) { setError(t("offer_limit_error").replace("{n}", String(dealsGone))); return; }
+    const filled = offers.filter((o) => o.title.trim());
+    if (isBiz && hasOffer && !filled.length) { setError(t("offer_required")); return; }
+    const tooLow = filled.find((o) => (parseInt(o.limit, 10) || 0) > 0 && (parseInt(o.limit, 10) || 0) < o.claimed);
+    if (isBiz && hasOffer && tooLow) { setError(t("offer_limit_error").replace("{n}", String(tooLow.claimed))); return; }
     setError(""); setSubmitting(true);
     try {
       const when = new Date(dateISO + "T00:00:00");
@@ -141,7 +146,7 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
         recurrence_days: isRecurring ? days : [], recurrence_label: recLabel,
         join_approval: joinApproval, age_restricted: ageRestricted,
         // Non-business accounts never send deal fields (the backend would refuse them).
-        ...(isBiz ? { offer_title: hasOffer ? offerTitle.trim() : "", offer_limit: dealLimit } : {}),
+        ...(isBiz ? { offers: hasOffer ? filled.map((o) => ({ id: o.id, title: o.title.trim(), limit: parseInt(o.limit, 10) || 0 })) : [] } : {}),
       };
       if (initial) {
         // Keep the stored timestamp when the date/time was not touched (avoids a false "time changed" notice).
@@ -320,16 +325,31 @@ export default function CreateEventScreen({ onDone, showClose, initial, inTabs }
               </View>
               <Switch testID="offer-toggle" value={hasOffer} onValueChange={setHasOffer} trackColor={{ true: colors.brand, false: colors.borderStrong }} />
             </View>
-            {hasOffer && (
-              <>
-                <Text style={[styles.subLabel, { color: colors.onSurfaceTertiary }]}>{t("offer_title_label")}</Text>
-                <TextInput testID="input-offer-title" value={offerTitle} onChangeText={setOfferTitle} maxLength={80}
+            {hasOffer && offers.map((o, i) => (
+              <View key={i} testID={`offer-${i}`} style={[styles.offerBox, { borderColor: colors.border }]}>
+                <View style={styles.offerHead}>
+                  <Text style={[styles.subLabel, { color: colors.onSurfaceTertiary, marginTop: 0 }]}>{t("offer_n").replace("{n}", String(i + 1))}</Text>
+                  {offers.length > 1 && (
+                    <Pressable testID={`offer-remove-${i}`} hitSlop={8} onPress={() => setOffers((list) => list.filter((_, j) => j !== i))}>
+                      <Ionicons name="close-circle" size={20} color={colors.onSurfaceTertiary} />
+                    </Pressable>
+                  )}
+                </View>
+                <TextInput testID={i === 0 ? "input-offer-title" : `input-offer-title-${i}`} value={o.title} onChangeText={(v) => setOffer(i, { title: v })} maxLength={80}
                   placeholder={t("offer_title_ph")} placeholderTextColor={colors.onSurfaceTertiary} style={inputStyle} />
-                <Text style={[styles.subLabel, { color: colors.onSurfaceTertiary }]}>{t("offer_limit_label")}</Text>
-                <TextInput testID="input-offer-limit" value={offerLimit} onChangeText={(v) => setOfferLimit(v.replace(/[^0-9]/g, ""))}
+                <TextInput testID={i === 0 ? "input-offer-limit" : `input-offer-limit-${i}`} value={o.limit} onChangeText={(v) => setOffer(i, { limit: v.replace(/[^0-9]/g, "") })}
                   keyboardType="number-pad" placeholder={t("offer_limit_ph")} placeholderTextColor={colors.onSurfaceTertiary} style={inputStyle} />
-              </>
+                {o.claimed > 0 && <Text style={[styles.hintText, { color: colors.onSurfaceTertiary, marginTop: 0 }]}>{t("deal_claimed_count").replace("{n}", String(o.claimed))}</Text>}
+              </View>
+            ))}
+            {hasOffer && offers.length < 3 && (
+              <Pressable testID="offer-add" onPress={() => setOffers((list) => [...list, { id: "", title: "", limit: "", claimed: 0 }])}
+                style={[styles.addOffer, { borderColor: colors.accent }]}>
+                <Ionicons name="add" size={18} color={colors.accent} />
+                <Text style={{ color: colors.accent, fontSize: 14, fontWeight: "800" }}>{t("offer_add")}</Text>
+              </Pressable>
             )}
+            {hasOffer && <Text style={[styles.hintText, { color: colors.onSurfaceTertiary, marginTop: 0 }]}>{t("offer_multi_hint")}</Text>}
           </Field>
         )}
 
@@ -427,6 +447,9 @@ const styles = StyleSheet.create({
   catChip: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, height: 40, borderRadius: 999, borderWidth: 1 },
   catChipText: { fontSize: 14, fontWeight: "600" },
   hintText: { fontSize: 12, marginTop: 6, lineHeight: 16 },
+  offerBox: { borderWidth: 1, borderRadius: 12, padding: 10, gap: 8, marginTop: 8 },
+  offerHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  addOffer: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, height: 42, borderRadius: 12, borderWidth: 1.5, borderStyle: "dashed", marginTop: 8 },
   subLabel: { fontSize: 12, fontWeight: "700", marginTop: 10 },
   dateBtn: { flexDirection: "row", alignItems: "center", gap: 10, height: 50, borderRadius: 12, borderWidth: 1, paddingHorizontal: 14 },
   dateText: { fontSize: 15, fontWeight: "600" },

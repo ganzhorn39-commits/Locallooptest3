@@ -6,7 +6,7 @@ import * as Haptics from "expo-haptics";
 import { useTheme } from "@/src/theme/theme";
 import { useI18n } from "@/src/i18n";
 import { useAuth } from "@/src/auth/AuthContext";
-import { api, ApiError, Deal, EventItem } from "@/src/api/client";
+import { api, ApiError, Deal, EventItem, Offer } from "@/src/api/client";
 import { dealStatusText } from "@/src/utils/deals";
 import { isPast } from "@/src/utils/eventTime";
 
@@ -42,20 +42,27 @@ export default function DealCard({ event, checkedIn }: { event: EventItem; check
     return () => { alive = false; };
   }, [user, event.id, event.offer_title, checkedIn]);
 
-  if (!event.offer_title && !deal) return null;
+  const offers: Offer[] = event.offers?.length ? event.offers
+    : event.offer_title ? [{ id: "main", title: event.offer_title, limit: event.offer_limit || 0, claimed: event.offer_claimed || 0 }] : [];
+  if (!offers.length && !deal) return null;
+  const multi = offers.length > 1;
 
-  const limit = event.offer_limit || 0;
-  const claimed = event.offer_claimed || 0;
+  const first = offers[0] || { id: "", title: "", limit: 0, claimed: 0 };
+  const limit = first.limit;
+  const claimed = first.claimed;
   const left = Math.max(0, limit - claimed);
   const soldOut = limit > 0 && left === 0;
   const over = eventIsOver(event);
   const errorText = error && error.attending === attending ? error.text : "";
+  const offerSub = (o: Offer) => isHost
+    ? (o.limit ? `${t("deal_claimed_count").replace("{n}", String(o.claimed))} / ${o.limit}` : t("deal_claimed_count").replace("{n}", String(o.claimed)))
+    : o.limit ? t("deal_left").replace("{n}", String(Math.max(0, o.limit - o.claimed))).replace("{m}", String(o.limit)) : t("deal_unlimited");
 
-  const claim = async () => {
+  const claim = async (offerId?: string) => {
     if (!user) { promptLogin(); return; }
     setBusy(true); setError(null);
     try {
-      setDeal(await api.claimDeal(event.id));
+      setDeal(await api.claimDeal(event.id, offerId));
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e) {
       const err = e as ApiError;
@@ -80,9 +87,9 @@ export default function DealCard({ event, checkedIn }: { event: EventItem; check
           <Ionicons name="gift" size={18} color={colors.onAccent} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={[styles.kicker, { color: colors.accent }]}>{deal ? t("deal_claimed") : t("deal_label")}</Text>
-          <Text testID="deal-title" style={[styles.title, { color: colors.onSurface }]}>{deal ? deal.offer_title : event.offer_title}</Text>
-          <Text testID="deal-sub" style={[styles.sub, { color: colors.onSurfaceTertiary }]}>{sub}</Text>
+          <Text style={[styles.kicker, { color: colors.accent }]}>{deal ? t("deal_claimed") : multi ? t("deal_choose") : t("deal_label")}</Text>
+          {(deal || !multi) && <Text testID="deal-title" style={[styles.title, { color: colors.onSurface }]}>{deal ? deal.offer_title : first.title}</Text>}
+          <Text testID="deal-sub" style={[styles.sub, { color: colors.onSurfaceTertiary }]}>{deal || !multi ? sub : t("deal_one_per_person")}</Text>
         </View>
       </View>
 
@@ -91,6 +98,28 @@ export default function DealCard({ event, checkedIn }: { event: EventItem; check
           <Ionicons name="qr-code" size={18} color={colors.onAccent} />
           <Text style={[styles.btnText, { color: colors.onAccent }]}>{t("deal_show_qr")}</Text>
         </Pressable>
+      ) : multi ? (
+        <View style={{ gap: 8 }}>
+          {offers.map((o) => {
+            const gone = o.limit > 0 && o.claimed >= o.limit;
+            const canClaim = !isHost && !over && !gone && !(user && !attending);
+            return (
+              <View key={o.id} testID={`deal-offer-${o.id}`} style={[styles.offerRow, { borderColor: colors.border, backgroundColor: colors.surfaceSecondary }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.offerTitle, { color: colors.onSurface }]}>{o.title}</Text>
+                  <Text style={[styles.sub, { color: gone ? colors.error : colors.onSurfaceTertiary, marginTop: 1 }]}>{gone ? t("deal_sold_out") : offerSub(o)}</Text>
+                </View>
+                {canClaim && (
+                  <Pressable testID={`deal-claim-${o.id}`} onPress={() => claim(o.id)} disabled={busy} style={[styles.smallBtn, { backgroundColor: colors.accent, opacity: busy ? 0.6 : 1 }]}>
+                    <Text style={[styles.smallBtnText, { color: colors.onAccent }]}>{t("deal_claim_short")}</Text>
+                  </Pressable>
+                )}
+              </View>
+            );
+          })}
+          {!isHost && over && <Text style={[styles.note, { color: colors.onSurfaceTertiary }]}>{t("deal_over")}</Text>}
+          {!isHost && !over && !!user && !attending && <Text testID="deal-checkin-first" style={[styles.note, { color: colors.onSurfaceTertiary }]}>{t("deal_checkin_first")}</Text>}
+        </View>
       ) : isHost ? null : over ? (
         <Text style={[styles.note, { color: colors.onSurfaceTertiary }]}>{t("deal_over")}</Text>
       ) : soldOut ? (
@@ -98,7 +127,7 @@ export default function DealCard({ event, checkedIn }: { event: EventItem; check
       ) : user && !attending ? (
         <Text testID="deal-checkin-first" style={[styles.note, { color: colors.onSurfaceTertiary }]}>{t("deal_checkin_first")}</Text>
       ) : (
-        <Pressable testID="deal-claim" onPress={claim} disabled={busy} style={[styles.btn, { backgroundColor: colors.accent, opacity: busy ? 0.6 : 1 }]}>
+        <Pressable testID="deal-claim" onPress={() => claim(first.id)} disabled={busy} style={[styles.btn, { backgroundColor: colors.accent, opacity: busy ? 0.6 : 1 }]}>
           {busy ? <ActivityIndicator color={colors.onAccent} /> : (
             <>
               <Ionicons name="gift-outline" size={18} color={colors.onAccent} />
@@ -122,4 +151,8 @@ const styles = StyleSheet.create({
   btn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 46, borderRadius: 12 },
   btnText: { fontSize: 15, fontWeight: "800" },
   note: { fontSize: 13, fontWeight: "600", textAlign: "center" },
+  offerRow: { flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: 12, borderWidth: 1 },
+  offerTitle: { fontSize: 15, fontWeight: "800" },
+  smallBtn: { height: 36, paddingHorizontal: 14, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  smallBtnText: { fontSize: 13, fontWeight: "800" },
 });

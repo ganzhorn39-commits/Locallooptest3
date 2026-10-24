@@ -14,6 +14,7 @@ import { categoryLabel, categoryMeta } from "@/src/constants/categories";
 import { api, EventItem } from "@/src/api/client";
 import DealCard from "@/src/components/DealCard";
 import { formatWhen, hasEnded, isLiveNow, recurrenceText, whenLabel } from "@/src/utils/eventTime";
+import { addToCalendar, recordView } from "@/src/utils/eventExtras";
 
 type Props = {
   event: EventItem;
@@ -63,6 +64,7 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
   const [reviewMsg, setReviewMsg] = useState("");
   const [submittingReview, setSubmittingReview] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [calNote, setCalNote] = useState("");
   const reloadSocial = () => setReloadKey((k) => k + 1);
 
   // Attendees, saved state and reviews; reloaded after a check-in, a review or a failed save.
@@ -89,6 +91,15 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
       reloadSocial();
       if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {} finally { setSubmittingReview(false); }
+  };
+
+  useEffect(() => { recordView(event.id); }, [event.id]);
+
+  const saveToCalendar = async () => {
+    if (Platform.OS !== "web") Haptics.selectionAsync();
+    const r = await addToCalendar(event);
+    if (r === "added" || r === "downloaded") setCalNote(t(r === "added" ? "calendar_added" : "calendar_downloaded"));
+    else if (r === "failed") setCalNote(t("calendar_failed"));
   };
 
   const shareEvent = async () => {
@@ -150,6 +161,9 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
           )}
           <Text style={styles.heroTitle} testID="event-sheet-title">{event.title}</Text>
         </View>
+        <Pressable testID="calendar-event-button" accessibilityLabel={t("calendar_add")} onPress={saveToCalendar} style={[styles.saveHero, { right: 114 }]}>
+          <Ionicons name="calendar-outline" size={20} color="#FFFFFF" />
+        </Pressable>
         <Pressable testID="share-event-button" onPress={shareEvent} style={[styles.saveHero, { right: 62 }]}>
           <Ionicons name="share-social-outline" size={20} color="#FFFFFF" />
         </Pressable>
@@ -169,6 +183,7 @@ export default function EventSheet({ event, checkedIn, onCheckin, bottomInset, u
             <Text style={[styles.countdownText, { color: live ? "#FFFFFF" : colors.onBrandTertiary }]} testID="event-countdown">{whenLabel(event, t, lang)}</Text>
           </View>
         </View>
+        {!!calNote && <Text testID="calendar-note" style={{ color: colors.success, fontSize: 13, fontWeight: "700" }}>{calNote}</Text>}
         <View style={styles.metaRow}>
           <View style={styles.metaItem}>
             <Ionicons name="location-outline" size={16} color={colors.onSurfaceTertiary} />
